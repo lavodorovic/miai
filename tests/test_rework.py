@@ -1,0 +1,31 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import duckdb
+
+from analytics.query_manager import QueryManager
+
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def test_rework_overview_invariants() -> None:
+    con = duckdb.connect(str(ROOT / "data" / "relio_analytics.db"), read_only=True)
+    qm = QueryManager(con)
+    df = qm.run("rework_overview", product_type=None, date_range=("2026-04-04", "2026-04-24"))
+    assert len(df) == 1
+    row = df.iloc[0].to_dict()
+    assert row["n_apps_total"] >= row["n_apps_with_interactions"]
+    assert row["n_apps_with_interactions"] >= row["n_apps_2plus_interactions"]
+    assert row["n_apps_2plus_interactions"] >= row["n_apps_3plus_interactions"]
+    assert 0.0 <= float(row["pct_first_pass"]) <= 100.0
+
+
+def test_rework_by_product_sums_reasonably() -> None:
+    con = duckdb.connect(str(ROOT / "data" / "relio_analytics.db"), read_only=True)
+    qm = QueryManager(con)
+    overall = qm.run("rework_overview", product_type=None, date_range=("2026-04-04", "2026-04-24"))
+    byp = qm.run("rework_by_product", product_type=None, date_range=("2026-04-04", "2026-04-24"))
+    assert int(byp["n_apps_total"].sum()) == int(overall.iloc[0]["n_apps_total"])
+

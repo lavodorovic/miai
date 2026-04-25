@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenvs
+.venv/
+venv/
+ENV/
+
+# Local databases / generated data (large; regenerate in CI/deploy)
+data/relio_analytics.db
+data/synthetic_logs.csv
+data/synthetic_audit_log.parquet
+
+# Local run artifacts
+streamlit.log
+streamlit.pid
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Streamlit local secrets (never commit)
+.streamlit/secrets.toml
