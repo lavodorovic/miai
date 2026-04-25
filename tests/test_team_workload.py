@@ -38,3 +38,10 @@ def test_team_workload_open_cases_is_not_more_than_inflight() -> None:
     )
     assert open_sum <= inflight
 
+
+def test_team_attention_cases_are_investigable() -> None:
+    con = duckdb.connect(str(ROOT / "data" / "relio_analytics.db"), read_only=True)
+    qm = QueryManager(con)
+    df = qm.run("team_attention_cases", product_type=None, date_range=("2026-04-04", "2026-04-24"))
+    assert {"application_id", "actor", "team", "days_in_stage"}.issubset(df.columns)
+

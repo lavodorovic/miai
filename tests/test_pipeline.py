@@ -43,6 +43,14 @@ def test_generate_row_counts() -> None:
     assert len(df) >= 9
 
 
+def test_stable_hero_cases_are_present() -> None:
+    df = generate_synthetic_audit_log(10, seed=42, anchor_timelines=False)
+    app_ids = set(df["application_id"].astype(str))
+    assert "demo-hero-success-full" in app_ids
+    assert "demo-hero-compliance-loop" in app_ids
+    assert "demo-hero-stuck-compliance" in app_ids
+
+
 def test_anchor_moves_last_event_into_window() -> None:
     df = generate_synthetic_audit_log(2, seed=3, anchor_timelines=False)
     end = pd.Timestamp("2026-04-24T18:00:00")

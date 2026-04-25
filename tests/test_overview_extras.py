@@ -88,3 +88,12 @@ def test_sla_breach_overview_has_only_expected_statuses() -> None:
         "Other",
     }
 
+
+def test_named_overview_kpi_queries_return_single_row() -> None:
+    con = _connect()
+    qm = QueryManager(con)
+    dr = ("2026-04-04", "2026-04-24")
+    for name in ["kpi_denom", "kpi_active", "kpi_avg_processing"]:
+        df = qm.run(name, product_type=None, date_range=dr)
+        assert len(df) == 1
+

@@ -46,3 +46,10 @@ def test_bottleneck_radar_wip_sums_to_inflight() -> None:
     )
     assert wip_sum == inflight
 
+
+def test_bottleneck_cases_have_investigator_ids() -> None:
+    con = duckdb.connect(str(ROOT / "data" / "relio_analytics.db"), read_only=True)
+    qm = QueryManager(con)
+    df = qm.run("bottleneck_cases", product_type=None, date_range=("2026-04-04", "2026-04-24"))
+    assert {"application_id", "stage_order", "days_in_stage"}.issubset(df.columns)
+

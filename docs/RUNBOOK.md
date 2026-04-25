@@ -42,6 +42,26 @@ python3 scripts/db_setup.py
 
 By default, generation applies **timeline anchoring** (last event near `--timeline-end`) and **carryover** (~70% of apps get audit rows *before* the late-April window so the Period dashboard **start snapshot** shows a real stage mix). Use `--no-carryover` to revert to the old “all step 0 at start” behaviour. Close any process holding `data/relio_analytics.db` (e.g. Streamlit) before `db_setup.py` so DuckDB can write the file.
 
+## Stable demo recipe
+
+Use the default generator settings for repeatable demos:
+
+```bash
+python3 scripts/generate_synthetic_audit_log.py --n 1000 --seed 42 --timeline-end 2026-04-24T18:00:00
+python3 scripts/db_setup.py
+```
+
+Recommended UI filter: date range `2026-04-04` to `2026-04-24`, product type `(All)`.
+
+Stable App investigator IDs:
+
+- `demo-hero-success-full` — clean completion path.
+- `demo-hero-compliance-loop` — multiple interaction rounds before success.
+- `demo-hero-stuck-customer` — customer/RFI follow-up path.
+- `demo-hero-stuck-compliance` — enhanced due diligence/compliance stall.
+- `demo-hero-offer-refused` — offer refusal terminal path.
+- `demo-hero-rejected` — rejected after compliance review.
+
 ## Nightly (optional)
 
 If `data/relio_analytics.db` is refreshed by ETL, run the same pytest slice or execute `transition_latest_drift_check.sql` in DuckDB after `scripts/db_setup.py`.

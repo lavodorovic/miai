@@ -223,6 +223,20 @@ def build_timeline(app: SyntheticApplication, start: datetime) -> list[dict[str,
     )
 
     if app.scenario == "stalled_ops_compliance":
+        push(
+            delta=_delay_ops(rng),
+            actor=_pick_assigned(rng, assigned_compliance, COMPLIANCE_ROSTER),
+            action="LABEL_ADDED",
+            description="User added label 'Enhanced due diligence' to application.",
+            context={"risk": "High", "reason": "Complex ownership and cross-border payments"},
+        )
+        push(
+            delta=_delay_overnight(rng),
+            actor=_pick_assigned(rng, assigned_compliance, COMPLIANCE_ROSTER),
+            action="COMPLIANCE_REVIEW_STARTED",
+            description="Compliance review is restarted after enhanced due diligence label.",
+            context={"reopened": True, "reason": "EDD follow-up required"},
+        )
         return rows
 
     if app.scenario == "rejected":
@@ -401,6 +415,84 @@ def build_timeline(app: SyntheticApplication, start: datetime) -> list[dict[str,
     return rows
 
 
+def _hero_applications(seed: int | None) -> list[SyntheticApplication]:
+    base_seed = 10_000 if seed is None else int(seed) + 10_000
+    specs = [
+        (
+            "demo-hero-success-full",
+            "success_full",
+            1,
+            "Atlas Robotics AG",
+            "Business Account",
+            "cr01@relio.ch",
+            "compliance01@relio.ch",
+        ),
+        (
+            "demo-hero-compliance-loop",
+            "success_full",
+            3,
+            "Nova Crossborder Trading AG",
+            "Capital Payments Account",
+            "cr02@relio.ch",
+            "compliance02@relio.ch",
+        ),
+        (
+            "demo-hero-stuck-customer",
+            "stalled_customer",
+            2,
+            "Helvetia Import Export GmbH",
+            "Business Account",
+            "cr03@relio.ch",
+            "compliance03@relio.ch",
+        ),
+        (
+            "demo-hero-stuck-compliance",
+            "stalled_ops_compliance",
+            1,
+            "Alpine Crypto Advisory GmbH",
+            "Capital Payments Account",
+            "cr04@relio.ch",
+            "compliance04@relio.ch",
+        ),
+        (
+            "demo-hero-offer-refused",
+            "offer_refused",
+            1,
+            "Phoenix Treasury Services AG",
+            "Business Account",
+            "cr05@relio.ch",
+            "compliance05@relio.ch",
+        ),
+        (
+            "demo-hero-rejected",
+            "rejected",
+            1,
+            "BlackPearl Holdings GmbH",
+            "Capital Payments Account",
+            "cr06@relio.ch",
+            "compliance06@relio.ch",
+        ),
+    ]
+    heroes: list[SyntheticApplication] = []
+    for idx, (app_id, scenario, rounds, company, product, cr, comp) in enumerate(specs):
+        heroes.append(
+            SyntheticApplication(
+                application_id=app_id,
+                customer_email=f"{app_id}@example.com",
+                signatory_email=f"{app_id}.signatory@example.com",
+                company_name=company,
+                company_uid=f"CHE900000{idx:03d}",
+                assigned_cr=cr,
+                assigned_compliance=comp,
+                product_type=product,
+                scenario=scenario,
+                interaction_rounds=rounds,
+                rng=random.Random(base_seed + idx),
+            )
+        )
+    return heroes
+
+
 def anchor_application_timelines(
     df: pd.DataFrame,
     *,
@@ -551,8 +643,12 @@ def generate_synthetic_audit_log(
         return "success_full"
 
     all_rows: list[dict[str, Any]] = []
+    heroes = _hero_applications(seed)
+    for idx, app in enumerate(heroes[: max(0, min(len(heroes), n_applications))]):
+        t0 = start_base + timedelta(days=idx * 3, hours=9)
+        all_rows.extend(build_timeline(app, t0))
 
-    for i in range(n_applications):
+    for i in range(max(0, n_applications - len(heroes))):
         s = pick_scenario()
         app_rng = random.Random(rng_master.randint(0, 2**31 - 1))
         cust_local = f"customer{i}.{app_rng.randint(100, 999)}@gmail.com"

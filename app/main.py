@@ -33,6 +33,11 @@ from analytics.team_productivity import (  # noqa: E402
     generate_staffing_calendar,
     generate_team_roster,
 )
+from app.tabs.shared import (  # noqa: E402
+    investigation_launcher,
+    pct_delta,
+    previous_date_range,
+)
 
 DEFAULT_DB = PROJECT_ROOT / "data" / "relio_analytics.db"
 
@@ -54,79 +59,6 @@ LOOP_ACTIONS = frozenset(
         "ANSWERS_EDIT_STARTED",
     }
 )
-
-KPI_ACTIVE_SQL = """
-WITH cohort AS (
-    SELECT DISTINCT application_id
-    FROM audit_logs
-    WHERE {{PRODUCT_TYPE_FILTER}}
-      AND {{DATE_RANGE_FILTER}}
-),
-latest AS (
-    SELECT
-        a.application_id,
-        a.action AS current_action
-    FROM audit_logs AS a
-    INNER JOIN cohort AS c ON a.application_id = c.application_id
-    WHERE {{PRODUCT_TYPE_FILTER}}
-    QUALIFY ROW_NUMBER() OVER (
-        PARTITION BY a.application_id
-        ORDER BY a.timestamp DESC, a.action DESC
-    ) = 1
-)
-SELECT COUNT(*)::BIGINT AS n
-FROM latest
-WHERE current_action NOT IN (
-    'MASTER_DATA_SUBMITTED',
-    'APPLICATION_REJECTED',
-    'APPLICATION_CANCELLED',
-    'OFFER_REFUSED'
-);
-"""
-
-KPI_AVG_PROCESSING_SQL = """
-WITH cohort AS (
-    SELECT DISTINCT application_id
-    FROM audit_logs
-    WHERE {{PRODUCT_TYPE_FILTER}}
-      AND {{DATE_RANGE_FILTER}}
-),
-started AS (
-    SELECT
-        a.application_id,
-        MIN(a.timestamp) AS started_at
-    FROM audit_logs AS a
-    INNER JOIN cohort AS c ON a.application_id = c.application_id
-    WHERE {{PRODUCT_TYPE_FILTER}}
-      AND a.action = 'APPLICATION_STARTED'
-    GROUP BY a.application_id
-),
-last_ts AS (
-    SELECT
-        a.application_id,
-        MAX(a.timestamp) AS last_at
-    FROM audit_logs AS a
-    INNER JOIN cohort AS c ON a.application_id = c.application_id
-    WHERE {{PRODUCT_TYPE_FILTER}}
-    GROUP BY a.application_id
-)
-SELECT
-    AVG(date_diff('day', s.started_at, l.last_at))::DOUBLE AS avg_days
-FROM started AS s
-INNER JOIN last_ts AS l USING (application_id)
-WHERE s.started_at IS NOT NULL;
-"""
-
-KPI_DENOM_SQL = """
-WITH filtered AS (
-    SELECT *
-    FROM audit_logs
-    WHERE {{PRODUCT_TYPE_FILTER}}
-      AND {{DATE_RANGE_FILTER}}
-)
-SELECT COUNT(DISTINCT application_id)::BIGINT AS n FROM filtered;
-"""
-
 
 def _connect_readonly(db_path: Path, *, db_mtime_ns: int) -> duckdb.DuckDBPyConnection:
     if not db_path.is_file():
@@ -444,69 +376,32 @@ def _date_range_days(date_range: tuple[str, str]) -> tuple[str, str]:
     return start_s, end_s
 
 
-def _cohort_application_ids(
-    qm: QueryManager, *, product_type: str | None, date_range: tuple[str, str]
-) -> list[str]:
-    df = qm.run_sql(
-        """
-        SELECT DISTINCT application_id
-        FROM audit_logs
-        WHERE {{PRODUCT_TYPE_FILTER}} AND {{DATE_RANGE_FILTER}}
-        ORDER BY 1
-        """,
-        product_type=product_type,
-        date_range=date_range,
-    )
-    return [str(x) for x in df["application_id"].tolist()] if not df.empty else []
-
-
-def _transitions_with_actor(
-    qm: QueryManager,
+def _executive_insights(
     *,
-    product_type: str | None,
-    date_range: tuple[str, str],
-) -> pd.DataFrame:
-    # Attribution rule: actor who triggered the to_stage event (audit_logs row at transition timestamp).
-    return qm.run_sql(
-        """
-        WITH cohort AS (
-            SELECT DISTINCT application_id
-            FROM audit_logs
-            WHERE {{PRODUCT_TYPE_FILTER}} AND {{DATE_RANGE_FILTER}}
-        ),
-        raw AS (
-            SELECT
-                t.application_id,
-                t.from_stage,
-                t.to_stage,
-                t.transition_at,
-                t.reason
-            FROM v_transitions AS t
-            INNER JOIN cohort AS c ON c.application_id = t.application_id
-            WHERE t.transition_at::DATE BETWEEN {{PERIOD_START_DATE}} AND {{PERIOD_END_DATE}}
-        )
-        SELECT
-            r.application_id,
-            r.from_stage,
-            r.to_stage,
-            r.transition_at,
-            a.actor,
-            COALESCE(vt.team, 'Other') AS team
-        FROM raw AS r
-        LEFT JOIN audit_logs AS a
-          ON a.application_id = r.application_id
-         AND a.timestamp = r.transition_at
-         AND a.action = r.reason
-        LEFT JOIN v_team AS vt
-          ON vt.application_id = a.application_id
-         AND vt.timestamp = a.timestamp
-         AND vt.action = r.reason
-         AND vt.actor = a.actor
-        WHERE COALESCE(vt.team, 'Other') IN ('CR', 'Compliance');
-        """,
-        product_type=product_type,
-        date_range=date_range,
-    )
+    n_active: int,
+    n_stuck: int,
+    pct_stuck: float,
+    thr_7d: int,
+    thr_ma7: float,
+    sla: pd.DataFrame,
+    ball: pd.DataFrame,
+) -> list[str]:
+    insights: list[str] = []
+    if n_active:
+        insights.append(f"{n_active:,} applications are still in-flight; {n_stuck:,} are stuck over 48h ({pct_stuck:.1f}%).")
+    else:
+        insights.append("No in-flight applications in the current filter.")
+
+    if not sla.empty:
+        breached = sla.loc[sla["status"] == "breached"].copy()
+        if not breached.empty:
+            top = breached.sort_values("n_applications", ascending=False).iloc[0]
+            insights.append(f"Largest SLA breach pocket: {top['sla_area']} with {int(top['n_applications']):,} applications.")
+    if not ball.empty:
+        top_team = ball.sort_values("n_applications", ascending=False).iloc[0]
+        insights.append(f"Most in-flight work currently waits on {top_team['team']} ({int(top_team['n_applications']):,} apps).")
+    insights.append(f"Terminal throughput was {thr_7d:,} in the last 7 days, with a latest MA7 of {thr_ma7:.1f}/day.")
+    return insights[:4]
 
 
 def _capacity_calendar_html(
@@ -710,6 +605,91 @@ def _team_workload_exceptions(df: pd.DataFrame, *, limit: int = 10) -> pd.DataFr
     ].head(int(limit))
 
 
+def _bottleneck_score_chart(df: pd.DataFrame) -> None:
+    work = df.query("wip_now > 0 or bottleneck_score > 0").head(12).copy()
+    if work.empty:
+        st.info("No bottleneck signal for this filter.")
+        return
+    work["stage"] = work["step_label"].astype(str).str.slice(0, 58)
+    chart = (
+        alt.Chart(work)
+        .mark_bar()
+        .encode(
+            x=alt.X("bottleneck_score:Q", title="Bottleneck score"),
+            y=alt.Y("stage:N", sort="-x", title=None),
+            color=alt.Color("wip_now:Q", title="WIP now"),
+            tooltip=[
+                "step_label",
+                "wip_now",
+                "net_7d",
+                alt.Tooltip("p90_dwell_hours:Q", format=".1f", title="P90 dwell hours"),
+                alt.Tooltip("bottleneck_score:Q", format=".2f", title="Score"),
+            ],
+        )
+        .properties(height=max(220, min(520, 34 * len(work))))
+    )
+    st.altair_chart(chart, width="stretch")
+
+
+def _bottleneck_aging_chart(df: pd.DataFrame) -> None:
+    cols = ["aging_0_24h", "aging_1_3d", "aging_3_7d", "aging_7d_plus"]
+    work = df.query("wip_now > 0").head(10).copy()
+    if work.empty:
+        st.info("No open WIP aging signal for this filter.")
+        return
+    long = work[["step_label", *cols]].melt(
+        id_vars=["step_label"],
+        value_vars=cols,
+        var_name="age_bucket",
+        value_name="applications",
+    )
+    labels = {
+        "aging_0_24h": "0-24h",
+        "aging_1_3d": "1-3d",
+        "aging_3_7d": "3-7d",
+        "aging_7d_plus": "7d+",
+    }
+    long["age_bucket"] = long["age_bucket"].map(labels)
+    long["stage"] = long["step_label"].astype(str).str.slice(0, 48)
+    chart = (
+        alt.Chart(long)
+        .mark_bar()
+        .encode(
+            x=alt.X("applications:Q", title="Applications"),
+            y=alt.Y("stage:N", title=None, sort=work["step_label"].astype(str).str.slice(0, 48).tolist()),
+            color=alt.Color("age_bucket:N", title="Age"),
+            tooltip=["step_label", "age_bucket", "applications"],
+        )
+        .properties(height=max(220, min(480, 32 * work["step_label"].nunique())))
+    )
+    st.altair_chart(chart, width="stretch")
+
+
+def _rework_product_chart(df: pd.DataFrame) -> None:
+    if df.empty:
+        st.info("No rework rows by product for this filter.")
+        return
+    work = df.copy()
+    work["loop_rate_pct"] = 100.0 * work["n_apps_2plus_interactions"] / work["n_apps_total"].replace(0, pd.NA)
+    chart = (
+        alt.Chart(work)
+        .mark_bar()
+        .encode(
+            x=alt.X("loop_rate_pct:Q", title="% with 2+ interactions"),
+            y=alt.Y("product_type:N", sort="-x", title=None),
+            tooltip=[
+                "product_type",
+                "n_apps_total",
+                "n_apps_2plus_interactions",
+                alt.Tooltip("loop_rate_pct:Q", format=".1f", title="Loop rate %"),
+                alt.Tooltip("pct_first_pass:Q", format=".1f", title="First pass %"),
+            ],
+        )
+        .properties(height=max(160, 44 * len(work)))
+    )
+    st.altair_chart(chart, width="stretch")
+
+
 def main() -> None:
     st.set_page_config(page_title="Relio Operations Intelligence", layout="wide")
     st.title("Relio Operations Intelligence")
@@ -797,13 +777,13 @@ def main() -> None:
     with tab_overview:
         st.header("Executive overview")
 
-        denom_df = qm.run_sql(KPI_DENOM_SQL, product_type=product_filter, date_range=date_range)
+        denom_df = qm.run("kpi_denom", product_type=product_filter, date_range=date_range)
         denom = int(denom_df.iloc[0]["n"]) if len(denom_df) else 0
 
-        active_df = qm.run_sql(KPI_ACTIVE_SQL, product_type=product_filter, date_range=date_range)
+        active_df = qm.run("kpi_active", product_type=product_filter, date_range=date_range)
         n_active = int(active_df.iloc[0]["n"]) if len(active_df) else 0
 
-        avg_df = qm.run_sql(KPI_AVG_PROCESSING_SQL, product_type=product_filter, date_range=date_range)
+        avg_df = qm.run("kpi_avg_processing", product_type=product_filter, date_range=date_range)
         avg_days = float(avg_df.iloc[0]["avg_days"]) if len(avg_df) and avg_df.iloc[0]["avg_days"] is not None else 0.0
 
         stuck_df = qm.run(
@@ -841,6 +821,11 @@ def main() -> None:
             product_type=product_filter,
             date_range=date_range,
         )
+        ball = qm.run(
+            "who_has_the_ball",
+            product_type=product_filter,
+            date_range=date_range,
+        )
         def _sla_n(area: str, status: str) -> int:
             if sla.empty:
                 return 0
@@ -852,6 +837,18 @@ def main() -> None:
         s1.metric("Throughput MA7 (per day)", f"{thr_ma7:.1f}")
         s2.metric("CR breached (as of now)", f"{_sla_n('CR review', 'breached'):,}")
         s3.metric("Compliance breached (as of now)", f"{_sla_n('Compliance', 'breached'):,}")
+
+        st.subheader("What needs attention")
+        for insight in _executive_insights(
+            n_active=n_active,
+            n_stuck=n_stuck,
+            pct_stuck=pct_stuck,
+            thr_7d=thr_7d,
+            thr_ma7=thr_ma7,
+            sla=sla,
+            ball=ball,
+        ):
+            st.markdown(f"- {insight}")
 
         with st.expander("KPI definitions (PHASE_0 §5)", expanded=False):
             st.caption(legend_subtitle("kpi_in_filter"))
@@ -879,11 +876,6 @@ def main() -> None:
         with c_l:
             st.subheader("Who has the ball (in-flight)")
             st.caption(legend_subtitle("who_has_the_ball"))
-            ball = qm.run(
-                "who_has_the_ball",
-                product_type=product_filter,
-                date_range=date_range,
-            )
             if ball.empty:
                 st.info("No in-flight applications in this filter.")
             else:
@@ -917,46 +909,8 @@ def main() -> None:
             st.info("No stuck applications in this filter.")
         else:
             # Enrich with team + days in current stage (derived from latest event).
-            enrich = qm.run(
-                "who_has_the_ball",
-                product_type=product_filter,
-                date_range=date_range,
-            )
-            # who_has_the_ball is aggregated; we need per-app info via SQL quickly.
-            per_app = qm.run_sql(
-                """
-                WITH latest AS (
-                    SELECT
-                        a.application_id,
-                        arg_max(t.team, a.timestamp) AS team,
-                        arg_max(a.timestamp, a.timestamp) AS last_ts
-                    FROM audit_logs AS a
-                    LEFT JOIN v_team AS t
-                      ON t.application_id = a.application_id
-                     AND t.timestamp = a.timestamp
-                     AND t.action = a.action
-                     AND t.actor = a.actor
-                    WHERE {{PRODUCT_TYPE_FILTER}}
-                    GROUP BY a.application_id
-                ),
-                cur AS (
-                    SELECT
-                        d.application_id,
-                        d.entered_at,
-                        d.is_open
-                    FROM v_stage_dwell AS d
-                    QUALIFY ROW_NUMBER() OVER (
-                        PARTITION BY d.application_id
-                        ORDER BY d.entered_at DESC
-                    ) = 1
-                )
-                SELECT
-                    l.application_id,
-                    COALESCE(l.team, 'Other') AS waiting_on,
-                    (EXTRACT(EPOCH FROM (current_timestamp - c.entered_at)) / 86400.0) AS days_in_current_stage
-                FROM latest AS l
-                LEFT JOIN cur AS c USING (application_id)
-                """,
+            per_app = qm.run(
+                "watchlist_enrichment",
                 product_type=product_filter,
                 date_range=None,
             )
@@ -983,6 +937,11 @@ def main() -> None:
                     "waiting_on": TextColumn("Waiting on"),
                     "days_in_current_stage": TextColumn("Days in current stage"),
                 },
+            )
+            investigation_launcher(
+                watch,
+                label="Send stuck case to App investigator",
+                key="overview_watchlist_investigate",
             )
 
     with tab_investigate:
@@ -1021,56 +980,8 @@ def main() -> None:
                 )
                 st.caption("Pink rows: repeated review / interaction actions (operational loops).")
 
-                dwell = qm.run_sql(
-                    """
-                    WITH cur AS (
-                        SELECT *
-                        FROM v_stage_dwell
-                        WHERE application_id = {{APP_ID_FILTER}}
-                          AND {{PRODUCT_TYPE_FILTER}}
-                        ORDER BY entered_at
-                    ),
-                    dim AS (
-                        SELECT * FROM (VALUES
-                            (1, '01 · INITIAL (application started)'),
-                            (2, '02 · SUBMITTED (application submitted)'),
-                            (3, '03 · DOCUMENTS_UPLOAD (docs submitted)'),
-                            (4, '04 · Ops queue · account manager assigned'),
-                            (5, '05 · Ops queue · app assigned'),
-                            (6, '06 · REVIEW · CR review started'),
-                            (7, '07 · REVIEW · CR review completed'),
-                            (8, '08 · REVIEW · compliance review started'),
-                            (9, '09 · INTERACTION_SUMMARY (RFI sent)'),
-                            (10, '10 · INTERACTION_SUBMITTED'),
-                            (11, '11 · INTERACTION_CANCELLED (CR interaction cancelled)'),
-                            (12, '12 · CR interaction started'),
-                            (13, '13 · INTERACTION_EDIT · answers edit started'),
-                            (14, '14 · INTERACTION_EDIT · answers edit finished'),
-                            (15, '15 · REVIEW · label added'),
-                            (16, '16 · REVIEW · compliance review completed'),
-                            (17, '17 · REJECTED (application rejected)'),
-                            (18, '18 · CANCELLED (application cancelled)'),
-                            (19, '19 · APPROVED path · offer prepared'),
-                            (20, '20 · OFFER_SENT'),
-                            (21, '21 · OFFER_RESPONSE (acceptOffer)'),
-                            (22, '22 · OFFER_REFUSED'),
-                            (23, '23 · Post-accept · video ident sent'),
-                            (24, '24 · Post-accept · video ident finished'),
-                            (25, '25 · Post-accept · enrollment approved'),
-                            (26, '26 · Post-accept · master data submitted'),
-                            (34, '34 · Other / unknown action')
-                        ) AS t(stage_order, stage_label)
-                    )
-                    SELECT
-                        c.entered_at,
-                        c.exited_at,
-                        c.stage_order,
-                        d.stage_label,
-                        COALESCE(c.dwell_hours, EXTRACT(EPOCH FROM (current_timestamp - c.entered_at)) / 3600.0) AS dwell_hours
-                    FROM cur AS c
-                    LEFT JOIN dim AS d ON c.stage_order = d.stage_order
-                    ORDER BY c.entered_at
-                    """,
+                dwell = qm.run(
+                    "application_dwell",
                     product_type=product_filter,
                     application_id=inv_id,
                     date_range=None,
@@ -1225,11 +1136,6 @@ def main() -> None:
 
     with tab_period:
         st.header("Period dashboard")
-        with st.expander("Prior-period compare (optional)", expanded=False):
-            st.caption(
-                "Reuse the same period queries with a shifted sidebar date_range; no separate endpoint yet "
-                "(PHASE_0 §2, RUNBOOK.md)."
-            )
         st.caption(
             f"Reporting window: **{date_range[0]}** → **{date_range[1]}** (inclusive, naive dates · PHASE_0 §2)."
             if date_range
@@ -1239,7 +1145,10 @@ def main() -> None:
             st.warning("Period SQL requires both start and end dates.")
         else:
             pd_board = load_period_dashboard(qm, product_type=product_filter, date_range=date_range)
+            prev_range = previous_date_range(date_range)
+            prev_board = load_period_dashboard(qm, product_type=product_filter, date_range=prev_range)
             cohort_n = int(pd_board.end_snapshot["active_applications"].sum())
+            prev_cohort_n = int(prev_board.end_snapshot["active_applications"].sum())
             start_term = int(
                 pd_board.start_snapshot.loc[
                     pd_board.start_snapshot["step_order"].isin(TERMINAL_STEP_ORDERS),
@@ -1257,11 +1166,24 @@ def main() -> None:
             r1c1.metric(
                 "Cohort (in period)",
                 f"{cohort_n:,}",
+                delta=pct_delta(float(cohort_n), float(prev_cohort_n)),
                 help="Distinct applications with ≥1 audit row in the filter window + product (§5 In filter).",
             )
-            r1c2.metric("Arrivals (first touch in window)", f"{pd_board.n_arrivals:,}")
-            r1c3.metric("Losses (terminal event in window)", f"{pd_board.n_losses:,}")
-            r1c4.metric("Movers (≥1 logical move)", f"{pd_board.n_movers:,}")
+            r1c2.metric(
+                "Arrivals (first touch in window)",
+                f"{pd_board.n_arrivals:,}",
+                delta=pct_delta(float(pd_board.n_arrivals), float(prev_board.n_arrivals)),
+            )
+            r1c3.metric(
+                "Losses (terminal event in window)",
+                f"{pd_board.n_losses:,}",
+                delta=pct_delta(float(pd_board.n_losses), float(prev_board.n_losses)),
+            )
+            r1c4.metric(
+                "Movers (≥1 logical move)",
+                f"{pd_board.n_movers:,}",
+                delta=pct_delta(float(pd_board.n_movers), float(prev_board.n_movers)),
+            )
 
             r2c1, r2c2, r2c3 = st.columns(3)
             r2c1.metric(
@@ -1271,6 +1193,22 @@ def main() -> None:
             )
             r2c2.metric("Apps in terminal stage (end snapshot)", f"{end_term:,}")
             r2c3.metric("Δ terminal bucket (end − start)", f"{end_term - start_term:,}")
+
+            with st.expander("Prior-period details", expanded=False):
+                st.caption(f"Previous comparison window: **{prev_range[0]}** → **{prev_range[1]}**.")
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            ["Cohort", cohort_n, prev_cohort_n, cohort_n - prev_cohort_n],
+                            ["Arrivals", pd_board.n_arrivals, prev_board.n_arrivals, pd_board.n_arrivals - prev_board.n_arrivals],
+                            ["Losses", pd_board.n_losses, prev_board.n_losses, pd_board.n_losses - prev_board.n_losses],
+                            ["Movers", pd_board.n_movers, prev_board.n_movers, pd_board.n_movers - prev_board.n_movers],
+                        ],
+                        columns=["metric", "current", "previous", "delta"],
+                    ),
+                    hide_index=True,
+                    width="stretch",
+                )
 
             st.subheader("Start snapshot — stage mix")
             st.caption(legend_subtitle("period_start_snapshot"))
@@ -1395,7 +1333,42 @@ Mini example:
             if radar.empty:
                 st.info("No rows for this filter.")
             else:
-                st.dataframe(radar, hide_index=True, width="stretch")
+                top = radar.iloc[0]
+                total_wip = int(radar["wip_now"].sum())
+                aging_7d = int(radar["aging_7d_plus"].sum())
+                b0, b1, b2 = st.columns(3)
+                b0.metric("Total WIP in bottleneck view", f"{total_wip:,}")
+                b1.metric("WIP aged 7d+", f"{aging_7d:,}")
+                b2.metric("Top bottleneck", str(top["step_label"]).split("·", 1)[0].strip())
+
+                left, right = st.columns([1, 1])
+                with left:
+                    st.subheader("Ranked bottlenecks")
+                    _bottleneck_score_chart(radar)
+                with right:
+                    st.subheader("Open WIP aging")
+                    _bottleneck_aging_chart(radar)
+
+                cases = qm.run(
+                    "bottleneck_cases",
+                    product_type=product_filter,
+                    date_range=date_range,
+                )
+                top_stages = radar.head(3)["stage_order"].tolist()
+                focus_cases = cases.loc[cases["stage_order"].isin(top_stages)].head(10) if not cases.empty else pd.DataFrame()
+                st.subheader("Cases to inspect")
+                if focus_cases.empty:
+                    st.info("No open cases in the top bottleneck stages.")
+                else:
+                    st.dataframe(focus_cases, hide_index=True, width="stretch")
+                    investigation_launcher(
+                        focus_cases,
+                        label="Send bottleneck case to App investigator",
+                        key="bottleneck_case_investigate",
+                    )
+
+                with st.expander("Show full bottleneck table", expanded=False):
+                    st.dataframe(radar, hide_index=True, width="stretch")
 
     with tab_rework:
         st.header("Rework analytics")
@@ -1415,13 +1388,44 @@ Mini example:
                 product_type=product_filter,
                 date_range=date_range,
             )
+            cases = qm.run(
+                "rework_cases",
+                product_type=product_filter,
+                date_range=date_range,
+            )
             if overall.empty:
                 st.info("No rows for this filter.")
             else:
-                st.dataframe(overall, hide_index=True, width="stretch")
+                row = overall.iloc[0]
+                total = int(row["n_apps_total"])
+                loop2 = int(row["n_apps_2plus_interactions"])
+                reopened = int(row["n_apps_with_compliance_reopened"])
+                answers_edit = int(row["n_apps_with_answers_edit"])
+                r0, r1, r2, r3 = st.columns(4)
+                r0.metric("Applications", f"{total:,}")
+                r1.metric("2+ interaction loops", f"{loop2:,}")
+                r2.metric("Compliance reopened", f"{reopened:,}")
+                r3.metric("Answers edited", f"{answers_edit:,}")
             if not by_prod.empty:
-                st.subheader("By product type")
-                st.dataframe(by_prod, hide_index=True, width="stretch")
+                st.subheader("Loop rate by product")
+                _rework_product_chart(by_prod)
+
+            st.subheader("Cases to inspect")
+            if cases.empty:
+                st.info("No high-rework cases for this filter.")
+            else:
+                st.dataframe(cases.head(10), hide_index=True, width="stretch")
+                investigation_launcher(
+                    cases,
+                    label="Send rework case to App investigator",
+                    key="rework_case_investigate",
+                )
+
+            with st.expander("Show raw rework tables", expanded=False):
+                if not overall.empty:
+                    st.dataframe(overall, hide_index=True, width="stretch")
+                if not by_prod.empty:
+                    st.dataframe(by_prod, hide_index=True, width="stretch")
 
     with tab_team:
         st.header("Team workload")
@@ -1487,6 +1491,21 @@ Mini example:
                             "reason": TextColumn("Why this is shown", width="large"),
                         },
                     )
+                    team_cases = qm.run(
+                        "team_attention_cases",
+                        product_type=product_filter,
+                        date_range=date_range,
+                    )
+                    attention_actors = set(attention["actor"].astype(str).tolist())
+                    team_cases = team_cases.loc[team_cases["actor"].astype(str).isin(attention_actors)].head(10)
+                    if not team_cases.empty:
+                        st.markdown("**Attention cases**")
+                        st.dataframe(team_cases, hide_index=True, width="stretch")
+                        investigation_launcher(
+                            team_cases,
+                            label="Send team workload case to App investigator",
+                            key="team_case_investigate",
+                        )
 
                 st.subheader("Capacity calendars")
                 st.caption(
