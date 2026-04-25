@@ -264,14 +264,28 @@ def _transition_sankey(
     def _compact_label(s: str, *, max_len: int) -> str:
         parts = [p.strip() for p in s.split("·")]
         if len(parts) >= 2:
-            out = f"{parts[0]} · {parts[1]}".replace("REVIEW", "Review").replace("INITIAL", "Initial")
+            step = parts[0].split()[0].strip()
+            bucket = (
+                parts[1]
+                .replace("DOCUMENTS_UPLOAD", "Docs")
+                .replace("SUBMITTED", "Submitted")
+                .replace("INITIAL", "Initial")
+                .replace("REVIEW", "Review")
+                .replace("INTERACTION_SUMMARY", "RFI")
+                .replace("INTERACTION_SUBMITTED", "RFI reply")
+                .replace("OFFER_RESPONSE", "Offer response")
+                .replace("OFFER_SENT", "Offer sent")
+                .replace("Post-accept", "Post accept")
+                .strip()
+            )
+            out = f"{step} {bucket}"
         else:
             out = s.strip()
         if len(out) > max_len:
             return out[: max_len - 1] + "…"
         return out
 
-    max_canvas = 24 if compact_node_labels else 42
+    max_canvas = 18 if compact_node_labels else 42
     labels = [_compact_label(s, max_len=max_canvas) for s in full_labels]
     nodes = list(raw_nodes)
     node_index = {int(s): i for i, s in enumerate(nodes)}
@@ -327,7 +341,7 @@ def _transition_sankey(
         height=height,
         paper_bgcolor="#ffffff",
         plot_bgcolor="#ffffff",
-        font=dict(size=11, family="Arial, sans-serif", color="rgba(40, 40, 40, 0.68)"),
+        font=dict(size=10, family="Arial, sans-serif", color="rgba(55, 65, 81, 0.58)"),
     )
     st.plotly_chart(fig, width="stretch")
 
@@ -1369,12 +1383,27 @@ Mini example:
                     )
                 with right:
                     include_self = bool(st.checkbox("Include self-loops", value=False))
+                    hide_routine = bool(
+                        st.checkbox(
+                            "Hide routine full-cohort edges",
+                            value=True,
+                            help="Removes edges that carry almost the whole cohort, such as the standard intake steps.",
+                        )
+                    )
                     st.caption(
                         "Sankey uses lighter compact labels; hover or open the table below for full stage names."
                     )
 
+                flow_edges = edges.copy()
+                if hide_routine:
+                    routine_cutoff = max(1, int(0.90 * cohort_n))
+                    flow_edges = flow_edges.loc[flow_edges["n_apps"] < routine_cutoff].copy()
+                    if flow_edges.empty:
+                        st.info("All visible transitions are routine full-cohort moves; showing the unfiltered flow.")
+                        flow_edges = edges.copy()
+
                 _transition_sankey(
-                    edges,
+                    flow_edges,
                     stage_label=mlab,
                     top_k=top_k,
                     min_apps=min_apps,
@@ -1393,7 +1422,7 @@ Mini example:
                     with bars_col:
                         st.markdown("**Largest transitions**")
                         _transition_edge_bars(
-                            edges,
+                            flow_edges,
                             top_k=top_k,
                             min_apps=min_apps,
                             include_self_loops=include_self,
@@ -1401,7 +1430,7 @@ Mini example:
                     with heat_col:
                         st.markdown("**Transition concentration**")
                         _transition_heatmap(
-                            edges,
+                            flow_edges,
                             top_k=top_k,
                             min_apps=min_apps,
                             include_self_loops=include_self,
