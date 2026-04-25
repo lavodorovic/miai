@@ -364,6 +364,68 @@ def _transition_sankey(
     st.plotly_chart(fig, width="stretch")
 
 
+def _transition_edge_bars(edges: pd.DataFrame, *, top_k: int, min_apps: int, include_self_loops: bool) -> None:
+    work = edges.copy()
+    if not include_self_loops:
+        work = work.loc[work["from_stage"] != work["to_stage"]].copy()
+    work = work.loc[work["n_apps"] >= int(min_apps)].copy()
+    if work.empty:
+        st.info("No transitions left after filters.")
+        return
+
+    work = work.sort_values("n_apps", ascending=False).head(int(top_k)).copy()
+    work["transition"] = (
+        work["from_stage"].astype(int).map("{:02d}".format)
+        + " -> "
+        + work["to_stage"].astype(int).map("{:02d}".format)
+    )
+    chart = (
+        alt.Chart(work)
+        .mark_bar()
+        .encode(
+            x=alt.X("n_apps:Q", title="Applications"),
+            y=alt.Y("transition:N", sort="-x", title="Transition"),
+            color=alt.Color("n_apps:Q", title="Applications", legend=None),
+            tooltip=[
+                "from_label",
+                "to_label",
+                "n_apps",
+            ],
+        )
+        .properties(height=max(260, min(620, 28 * len(work))))
+    )
+    st.altair_chart(chart, width="stretch")
+
+
+def _transition_heatmap(edges: pd.DataFrame, *, top_k: int, min_apps: int, include_self_loops: bool) -> None:
+    work = edges.copy()
+    if not include_self_loops:
+        work = work.loc[work["from_stage"] != work["to_stage"]].copy()
+    work = work.loc[work["n_apps"] >= int(min_apps)].copy()
+    if work.empty:
+        st.info("No transition matrix after filters.")
+        return
+
+    from_stages = work.groupby("from_stage")["n_apps"].sum().sort_values(ascending=False).head(12).index
+    to_stages = work.groupby("to_stage")["n_apps"].sum().sort_values(ascending=False).head(12).index
+    work = work.loc[work["from_stage"].isin(from_stages) & work["to_stage"].isin(to_stages)].copy()
+    work = work.sort_values("n_apps", ascending=False).head(int(top_k)).copy()
+    work["from_step"] = work["from_stage"].astype(int).map("{:02d}".format)
+    work["to_step"] = work["to_stage"].astype(int).map("{:02d}".format)
+    chart = (
+        alt.Chart(work)
+        .mark_rect()
+        .encode(
+            x=alt.X("to_step:N", title="To stage"),
+            y=alt.Y("from_step:N", title="From stage"),
+            color=alt.Color("n_apps:Q", title="Applications"),
+            tooltip=["from_label", "to_label", "n_apps"],
+        )
+        .properties(height=360)
+    )
+    st.altair_chart(chart, width="stretch")
+
+
 def _history_loop_flags(df: pd.DataFrame) -> pd.Series:
     """Boolean mask: repeat compliance / interaction actions (review loops)."""
     work = df.copy().reset_index(drop=True)
@@ -1340,23 +1402,43 @@ Mini example:
                 with right:
                     include_self = bool(st.checkbox("Include self-loops", value=False))
                     st.caption(
-                        "The flow uses stage numbers on the graphic; hover or open the table below for full stage names."
+                        "Default view avoids Sankey spaghetti: bars show the biggest moves, heatmap shows where movement concentrates."
                     )
 
-                _transition_sankey(
-                    edges,
-                    stage_label=mlab,
-                    top_k=top_k,
-                    min_apps=min_apps,
-                    include_self_loops=include_self,
-                    compact_node_labels=True,
-                )
+                bars_col, heat_col = st.columns([1, 1])
+                with bars_col:
+                    st.markdown("**Largest transitions**")
+                    _transition_edge_bars(
+                        edges,
+                        top_k=top_k,
+                        min_apps=min_apps,
+                        include_self_loops=include_self,
+                    )
+                with heat_col:
+                    st.markdown("**Transition concentration**")
+                    _transition_heatmap(
+                        edges,
+                        top_k=top_k,
+                        min_apps=min_apps,
+                        include_self_loops=include_self,
+                    )
 
                 with st.expander("Show transition edges as a table", expanded=False):
                     show = edges[
                         ["from_label", "from_stage", "to_label", "to_stage", "n_apps"]
                     ].sort_values("n_apps", ascending=False)
                     st.dataframe(show, hide_index=True, width="stretch")
+
+                with st.expander("Show experimental Sankey", expanded=False):
+                    st.caption("Kept for exploration only; the default charts above are designed for readability.")
+                    _transition_sankey(
+                        edges,
+                        stage_label=mlab,
+                        top_k=top_k,
+                        min_apps=min_apps,
+                        include_self_loops=include_self,
+                        compact_node_labels=True,
+                    )
 
     with tab_bottleneck:
         st.header("Bottleneck radar")
