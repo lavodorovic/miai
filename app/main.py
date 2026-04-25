@@ -261,47 +261,91 @@ def _transition_sankey(
     raw_nodes = sorted({int(x) for x in set(work["from_stage"]).union(set(work["to_stage"]))})
     full_labels = [stage_label.get(int(s), f"Stage {int(s)}") for s in raw_nodes]
 
-    def _compact_label(s: str, *, max_len: int) -> str:
-        # Labels look like: "04 · Ops queue · account manager assigned"
-        # Keep the step + first meaningful bucket for readability.
-        parts = [p.strip() for p in s.split("·")]
-        if len(parts) >= 2:
-            head = f"{parts[0]} · {parts[1]}"
-            # Trim common verbose tails like "(...)" unless it's the primary token.
-            out = head.strip()
-        else:
-            out = s.strip()
-        if len(out) > max_len:
-            return out[: max_len - 1] + "…"
-        return out
-
-    # Always keep hover text full; only shorten on-canvas labels when requested.
-    max_canvas = 34 if compact_node_labels else 52
-    labels = [_compact_label(s, max_len=max_canvas) for s in full_labels]
-
-    # Order nodes by stage id (process order) to reduce crossing / label pile-ups.
+    # Keep the graphic itself clean: short stage numbers on-canvas, full labels in hover/table.
+    labels = [f"{int(s):02d}" for s in raw_nodes] if compact_node_labels else full_labels
     nodes = list(raw_nodes)
     node_index = {int(s): i for i, s in enumerate(nodes)}
+    node_value = {
+        int(stage): int(
+            work.loc[work["from_stage"].astype(int).eq(int(stage)), "n_apps"].sum()
+            + work.loc[work["to_stage"].astype(int).eq(int(stage)), "n_apps"].sum()
+        )
+        for stage in nodes
+    }
 
-    # More nodes => more vertical space needed to avoid label collisions.
-    height = int(max(620, min(1200, 360 + 40 * len(nodes))))
+    def _stage_column(stage: int) -> int:
+        if stage <= 3:
+            return 0
+        if stage <= 5:
+            return 1
+        if stage <= 7:
+            return 2
+        if stage in {8, 15, 16}:
+            return 3
+        if 9 <= stage <= 14:
+            return 4
+        if 19 <= stage <= 22:
+            return 5
+        if 23 <= stage <= 26:
+            return 6
+        return 7
+
+    columns: dict[int, list[int]] = {}
+    for stage in nodes:
+        columns.setdefault(_stage_column(int(stage)), []).append(int(stage))
+    for col_nodes in columns.values():
+        col_nodes.sort(key=lambda s: (-node_value.get(s, 0), s))
+
+    max_col = max(columns) if columns else 1
+    x_positions: list[float] = []
+    y_positions: list[float] = []
+    for stage in nodes:
+        col = _stage_column(int(stage))
+        col_nodes = columns[col]
+        pos = col_nodes.index(int(stage))
+        x_positions.append(0.02 + 0.96 * (col / max(1, max_col)))
+        y_positions.append(0.04 + 0.88 * ((pos + 0.5) / max(1, len(col_nodes))))
+
+    palette = [
+        "#4C78A8",
+        "#59A14F",
+        "#F28E2B",
+        "#B07AA1",
+        "#76B7B2",
+        "#EDC948",
+        "#E15759",
+        "#9C755F",
+    ]
+    node_colors = [palette[_stage_column(int(stage)) % len(palette)] for stage in nodes]
+    link_values = [int(v) for v in work["n_apps"].tolist()]
+    max_link = max(link_values) if link_values else 1
+    link_colors = [
+        f"rgba(80, 80, 80, {0.10 + 0.22 * (value / max_link):.3f})"
+        for value in link_values
+    ]
+
+    height = int(max(560, min(960, 420 + 24 * len(nodes))))
 
     fig = go.Figure(
         data=[
             go.Sankey(
-                arrangement="perpendicular",
+                arrangement="fixed",
                 node=dict(
-                    pad=18,
-                    thickness=18,
-                    line=dict(width=0.5, color="#cfd4dc"),
+                    pad=24,
+                    thickness=12,
+                    line=dict(width=0.8, color="rgba(40, 40, 40, 0.35)"),
                     label=labels,
+                    color=node_colors,
+                    x=x_positions,
+                    y=y_positions,
                     customdata=full_labels,
                     hovertemplate="%{customdata}<extra></extra>",
                 ),
                 link=dict(
                     source=[node_index[int(s)] for s in work["from_stage"].tolist()],
                     target=[node_index[int(s)] for s in work["to_stage"].tolist()],
-                    value=[int(v) for v in work["n_apps"].tolist()],
+                    value=link_values,
+                    color=link_colors,
                     hovertemplate=(
                         "<b>%{source.customdata}</b> → <b>%{target.customdata}</b><br>"
                         "%{value} apps<extra></extra>"
@@ -311,13 +355,13 @@ def _transition_sankey(
         ]
     )
     fig.update_layout(
-        margin=dict(l=22, r=22, t=34, b=22),
+        margin=dict(l=12, r=12, t=24, b=12),
         height=height,
         paper_bgcolor="#ffffff",
         plot_bgcolor="#ffffff",
-        font=dict(size=15, family="system-ui, -apple-system, Segoe UI, Arial, sans-serif", color="#111"),
+        font=dict(size=12, family="system-ui, -apple-system, Segoe UI, Arial, sans-serif", color="#111"),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def _history_loop_flags(df: pd.DataFrame) -> pd.Series:
@@ -1279,8 +1323,8 @@ Mini example:
                         st.slider(
                             "Top edges to display",
                             min_value=10,
-                            max_value=80,
-                            value=35,
+                            max_value=40,
+                            value=20,
                             step=5,
                         )
                     )
@@ -1295,11 +1339,8 @@ Mini example:
                     )
                 with right:
                     include_self = bool(st.checkbox("Include self-loops", value=False))
-                    compact_labels = bool(
-                        st.checkbox("Compact node labels", value=True, help="Shorten stage labels on the chart; full labels show on hover.")
-                    )
                     st.caption(
-                        "Tip: raise the min threshold or lower top-K to reduce visual noise."
+                        "The flow uses stage numbers on the graphic; hover or open the table below for full stage names."
                     )
 
                 _transition_sankey(
@@ -1308,7 +1349,7 @@ Mini example:
                     top_k=top_k,
                     min_apps=min_apps,
                     include_self_loops=include_self,
-                    compact_node_labels=compact_labels,
+                    compact_node_labels=True,
                 )
 
                 with st.expander("Show transition edges as a table", expanded=False):
