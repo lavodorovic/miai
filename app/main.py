@@ -30,11 +30,8 @@ from analytics.legend import subtitle as legend_subtitle  # noqa: E402
 from analytics.period_dashboard import load_period_dashboard  # noqa: E402
 from analytics.query_manager import QueryManager  # noqa: E402
 from analytics.team_productivity import (  # noqa: E402
-    bucket_actor_to_roster,
-    generate_case_risk,
     generate_staffing_calendar,
     generate_team_roster,
-    score_transitions,
 )
 
 DEFAULT_DB = PROJECT_ROOT / "data" / "relio_analytics.db"
@@ -601,6 +598,116 @@ def _capacity_calendar_html(
         f"<div style='margin-top:6px;font-size:11px;color:#777'>Cell value: effective people (sum % / 100) · Footer: headcount working</div>"
     )
     return table
+
+
+def _team_open_cases_chart(df: pd.DataFrame, *, team: str) -> None:
+    work = df.query("team == @team").copy()
+    if work.empty:
+        st.info(f"No {team} workload rows for this filter.")
+        return
+
+    work["suggested_rebalance_flag"] = work["suggested_rebalance_flag"].fillna(False).astype(bool)
+    work = work.sort_values(["open_cases_now", "p90_age_open_days"], ascending=[False, False])
+    height = max(180, min(520, 34 * len(work)))
+    chart = (
+        alt.Chart(work)
+        .mark_bar()
+        .encode(
+            x=alt.X("open_cases_now:Q", title="Open cases now"),
+            y=alt.Y("actor:N", sort="-x", title=None),
+            color=alt.Color(
+                "suggested_rebalance_flag:N",
+                title="Needs attention",
+                scale=alt.Scale(domain=[False, True], range=["#8fb3ff", "#e45756"]),
+            ),
+            tooltip=[
+                "actor",
+                "team",
+                "open_cases_now",
+                "completed_7d",
+                "completed_30d",
+                alt.Tooltip("p90_age_open_days:Q", format=".1f", title="P90 open age days"),
+            ],
+        )
+        .properties(height=height)
+    )
+    st.altair_chart(chart, width="stretch")
+
+
+def _team_backlog_throughput_chart(df: pd.DataFrame) -> None:
+    work = df.copy()
+    if work.empty:
+        st.info("No workload rows for this filter.")
+        return
+
+    work["actor_label"] = work["team"].astype(str) + " · " + work["actor"].astype(str)
+    work["suggested_rebalance_flag"] = work["suggested_rebalance_flag"].fillna(False).astype(bool)
+    chart = (
+        alt.Chart(work)
+        .mark_circle(opacity=0.85)
+        .encode(
+            x=alt.X("completed_7d:Q", title="Completed last 7 days"),
+            y=alt.Y("open_cases_now:Q", title="Open cases now"),
+            size=alt.Size("completed_30d:Q", title="Completed last 30 days", legend=None),
+            color=alt.Color("team:N", title="Team"),
+            shape=alt.Shape("suggested_rebalance_flag:N", title="Needs attention"),
+            tooltip=[
+                "actor_label",
+                "open_cases_now",
+                "completed_7d",
+                "completed_30d",
+                alt.Tooltip("p90_age_open_days:Q", format=".1f", title="P90 open age days"),
+            ],
+        )
+        .properties(height=320)
+    )
+    st.altair_chart(chart, width="stretch")
+
+
+def _team_workload_exceptions(df: pd.DataFrame, *, limit: int = 10) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+
+    work = df.copy()
+    for col in ["open_cases_now", "completed_7d", "completed_30d", "p90_age_open_days"]:
+        work[col] = pd.to_numeric(work[col], errors="coerce").fillna(0)
+    work["suggested_rebalance_flag"] = work["suggested_rebalance_flag"].fillna(False).astype(bool)
+
+    open_threshold = float(work["open_cases_now"].quantile(0.75)) if len(work) else 0.0
+    high_open = work["open_cases_now"] >= max(1.0, open_threshold)
+    high_age = work["p90_age_open_days"] >= 2.0
+    low_recent_output = high_open & (work["completed_7d"] == 0)
+
+    def _reason(row: pd.Series) -> str:
+        reasons: list[str] = []
+        if bool(row["suggested_rebalance_flag"]):
+            reasons.append("above team rebalance threshold")
+        if float(row["p90_age_open_days"]) >= 2.0:
+            reasons.append("p90 open age >= 2 days")
+        if float(row["open_cases_now"]) >= max(1.0, open_threshold) and int(row["completed_7d"]) == 0:
+            reasons.append("high open load with no 7d completions")
+        return "; ".join(reasons)
+
+    work = work.loc[work["suggested_rebalance_flag"] | high_age | low_recent_output].copy()
+    if work.empty:
+        return pd.DataFrame()
+
+    work["reason"] = work.apply(_reason, axis=1)
+    work = work.sort_values(
+        ["suggested_rebalance_flag", "p90_age_open_days", "open_cases_now"],
+        ascending=[False, False, False],
+    )
+    return work[
+        [
+            "team",
+            "actor",
+            "open_cases_now",
+            "completed_7d",
+            "completed_30d",
+            "p90_age_open_days",
+            "reason",
+        ]
+    ].head(int(limit))
 
 
 def main() -> None:
@@ -1330,20 +1437,60 @@ Mini example:
             if wl.empty:
                 st.info("No workload rows for this filter.")
             else:
-                cr = wl.query("team == 'CR'").copy()
-                comp = wl.query("team == 'Compliance'").copy()
-                l, r = st.columns(2)
-                with l:
-                    st.subheader("CR")
-                    st.dataframe(cr, hide_index=True, width="stretch")
-                with r:
-                    st.subheader("Compliance")
-                    st.dataframe(comp, hide_index=True, width="stretch")
+                wl = wl.copy()
+                for col in ["open_cases_now", "completed_7d", "completed_30d", "p90_age_open_days"]:
+                    wl[col] = pd.to_numeric(wl[col], errors="coerce").fillna(0)
+                wl["suggested_rebalance_flag"] = wl["suggested_rebalance_flag"].fillna(False).astype(bool)
 
-                st.subheader("Capacity & productivity (risk-weighted)")
+                cr_open = int(wl.loc[wl["team"] == "CR", "open_cases_now"].sum())
+                comp_open = int(wl.loc[wl["team"] == "Compliance", "open_cases_now"].sum())
+                attention = _team_workload_exceptions(wl)
+                max_age = float(wl["p90_age_open_days"].max()) if len(wl) else 0.0
+                active_actors = int((wl["open_cases_now"] > 0).sum())
+
+                k0, k1, k2, k3 = st.columns(4)
+                k0.metric("CR open cases", f"{cr_open:,}")
+                k1.metric("Compliance open cases", f"{comp_open:,}")
+                k2.metric("Actors with open work", f"{active_actors:,}")
+                k3.metric("Max p90 open age", f"{max_age:.1f}d")
+
+                st.subheader("Open workload by actor")
+                left, right = st.columns(2)
+                with left:
+                    st.markdown("**CR**")
+                    _team_open_cases_chart(wl, team="CR")
+                with right:
+                    st.markdown("**Compliance**")
+                    _team_open_cases_chart(wl, team="Compliance")
+
+                st.subheader("Throughput vs backlog")
                 st.caption(
-                    "Mock inputs today (capacity calendar + risk). Later these will be linked to real systems. "
-                    "Work events are logical stage transitions attributed to the actor who triggered the to-stage."
+                    "Each point is an actor. Higher means more open backlog; farther right means more cases completed in the last 7 days."
+                )
+                _team_backlog_throughput_chart(wl)
+
+                st.subheader("Attention list")
+                if attention.empty:
+                    st.success("No actors crossed the current attention thresholds.")
+                else:
+                    st.dataframe(
+                        attention,
+                        hide_index=True,
+                        width="stretch",
+                        column_config={
+                            "team": TextColumn("Team"),
+                            "actor": TextColumn("Actor", width="large"),
+                            "open_cases_now": st.column_config.NumberColumn("Open cases", format="%d"),
+                            "completed_7d": st.column_config.NumberColumn("Completed 7d", format="%d"),
+                            "completed_30d": st.column_config.NumberColumn("Completed 30d", format="%d"),
+                            "p90_age_open_days": st.column_config.NumberColumn("P90 open age", format="%.1f days"),
+                            "reason": TextColumn("Why this is shown", width="large"),
+                        },
+                    )
+
+                st.subheader("Capacity calendars")
+                st.caption(
+                    "Mock staffing inputs today. Edit weekly allocation per person, then use the monthly calendars to see effective people by day."
                 )
 
                 start_day, end_day = _date_range_days(date_range)
@@ -1451,174 +1598,58 @@ Mini example:
 
                 st.session_state[cal_key] = staffing
 
-                # Risk table (mock, deterministic) for cohort apps.
-                apps = _cohort_application_ids(qm, product_type=product_filter, date_range=date_range)
-                risk_key = f"case_risk::{start_day}::{end_day}::{product_filter or '(All)'}"
-                if risk_key not in st.session_state:
-                    st.session_state[risk_key] = generate_case_risk(apps, seed=42)
-                case_risk = st.session_state[risk_key]
-
-                tr = _transitions_with_actor(qm, product_type=product_filter, date_range=date_range)
-                if tr.empty:
-                    st.info("No attributable CR/Compliance transitions in this window.")
-                else:
-                    # Roll up potentially many distinct actors to the fixed roster.
-                    tr = tr.copy()
-                    tr.loc[tr["team"] == "CR", "actor"] = tr.loc[tr["team"] == "CR", "actor"].map(
-                        lambda a: bucket_actor_to_roster(str(a), team="CR", roster=roster_cr, seed=42)
+                daily_cap = (
+                    staffing.groupby(["team", "day"], as_index=False)
+                    .agg(
+                        effective_people=("availability_pct", lambda s: float(s.sum()) / 100.0),
+                        headcount_working=("availability_pct", lambda s: int((s.astype(int) > 0).sum())),
                     )
-                    tr.loc[tr["team"] == "Compliance", "actor"] = tr.loc[
-                        tr["team"] == "Compliance", "actor"
-                    ].map(lambda a: bucket_actor_to_roster(str(a), team="Compliance", roster=roster_comp, seed=42))
-                    per_actor, detailed = score_transitions(tr, case_risk, staffing)
+                    .sort_values(["team", "day"])
+                )
 
-                    # Daily capacity summary (calendar view + totals).
-                    daily_cap = (
-                        staffing.groupby(["team", "day"], as_index=False)
-                        .agg(
-                            effective_people=("availability_pct", lambda s: float(s.sum()) / 100.0),
-                            headcount_working=("availability_pct", lambda s: int((s.astype(int) > 0).sum())),
-                        )
-                        .sort_values(["team", "day"])
+                eff_by_team = daily_cap.groupby("team")["effective_people"].sum().to_dict()
+                c0, c1, c2 = st.columns(3)
+                c0.metric("CR effective team-days", f"{float(eff_by_team.get('CR', 0.0)):.1f}")
+                c1.metric(
+                    "Compliance effective team-days",
+                    f"{float(eff_by_team.get('Compliance', 0.0)):.1f}",
+                )
+                c2.metric("Total effective team-days", f"{float(sum(eff_by_team.values())):.1f}")
+
+                st.markdown("**Calendar view** (Sat/Sun shaded)")
+                # Month selector based on the staffing window.
+                month_min = pd.to_datetime(start_day).to_period("M").to_timestamp().date()
+                month_max = pd.to_datetime(end_day).to_period("M").to_timestamp().date()
+                month_choice = st.date_input(
+                    "Month",
+                    value=month_min,
+                    min_value=month_min,
+                    max_value=month_max,
+                    key=f"{cal_key}::month_choice",
+                )
+                y = int(month_choice.year)
+                m = int(month_choice.month)
+                lcal, rcal = st.columns(2)
+                with lcal:
+                    components.html(
+                        _capacity_calendar_html(
+                            daily_cap.query("team == 'CR'")[["day", "effective_people", "headcount_working"]],
+                            team="CR",
+                            year=y,
+                            month=m,
+                        ),
+                        height=520,
                     )
-                    combined = (
-                        daily_cap.groupby("day", as_index=False)
-                        .agg(
-                            effective_people=("effective_people", "sum"),
-                            headcount_working=("headcount_working", "sum"),
-                        )
-                        .assign(team="Total")
+                with rcal:
+                    components.html(
+                        _capacity_calendar_html(
+                            daily_cap.query("team == 'Compliance'")[["day", "effective_people", "headcount_working"]],
+                            team="Compliance",
+                            year=y,
+                            month=m,
+                        ),
+                        height=520,
                     )
-                    cap_show = pd.concat([daily_cap, combined], ignore_index=True).sort_values(["day", "team"])
-
-                    st.markdown("**Calendar view** (Sat/Sun shaded)")
-                    # Month selector based on the staffing window.
-                    month_min = pd.to_datetime(start_day).to_period("M").to_timestamp().date()
-                    month_max = pd.to_datetime(end_day).to_period("M").to_timestamp().date()
-                    month_choice = st.date_input(
-                        "Month",
-                        value=month_min,
-                        min_value=month_min,
-                        max_value=month_max,
-                        key=f"{cal_key}::month_choice",
-                    )
-                    y = int(month_choice.year)
-                    m = int(month_choice.month)
-                    lcal, rcal = st.columns(2)
-                    with lcal:
-                        components.html(
-                            _capacity_calendar_html(
-                                daily_cap.query("team == 'CR'")[["day", "effective_people", "headcount_working"]],
-                                team="CR",
-                                year=y,
-                                month=m,
-                            ),
-                            height=520,
-                        )
-                    with rcal:
-                        components.html(
-                            _capacity_calendar_html(
-                                daily_cap.query("team == 'Compliance'")[["day", "effective_people", "headcount_working"]],
-                                team="Compliance",
-                                year=y,
-                                month=m,
-                            ),
-                            height=520,
-                        )
-
-                    st.markdown("**Capacity totals**")
-                    st.dataframe(cap_show, hide_index=True, width="stretch")
-
-                    n_total = int(len(tr))
-                    n_missing_actor = int(tr["actor"].isna().sum()) if "actor" in tr.columns else n_total
-                    if n_total > 0 and n_missing_actor > 0:
-                        st.warning(
-                            f"{n_missing_actor:,}/{n_total:,} transitions could not be attributed to an actor "
-                            "(missing audit row match at transition timestamp)."
-                        )
-
-                    tiles = st.columns(4)
-                    eff_days = float(
-                        staffing["availability_pct"].astype(float).sum() / 100.0 if not staffing.empty else 0.0
-                    )
-                    tiles[0].metric("Effective team-days (window)", f"{eff_days:.1f}")
-                    tiles[1].metric("Attributed transitions", f"{n_total - n_missing_actor:,}")
-                    tiles[2].metric(
-                        "Unique cases touched", f"{int(detailed['application_id'].nunique()):,}"
-                    )
-                    tiles[3].metric("Total points", f"{int(detailed['points'].sum()):,}")
-
-                    # Daily efficiency: transitions/cases per effective person-day.
-                    detailed["day"] = pd.to_datetime(detailed["transition_at"]).dt.date.astype(str)
-                    daily_work = (
-                        detailed.groupby(["team", "day"], as_index=False)
-                        .agg(
-                            transitions=("application_id", "size"),
-                            cases=("application_id", pd.Series.nunique),
-                            points=("points", "sum"),
-                        )
-                        .sort_values(["team", "day"])
-                    )
-                    daily_eff = daily_work.merge(
-                        daily_cap,
-                        on=["team", "day"],
-                        how="left",
-                    )
-                    daily_eff["effective_people"] = daily_eff["effective_people"].fillna(0.0)
-                    daily_eff["transitions_per_effective_person"] = daily_eff["transitions"] / daily_eff[
-                        "effective_people"
-                    ].replace(0.0, pd.NA)
-                    daily_eff["cases_per_effective_person"] = daily_eff["cases"] / daily_eff[
-                        "effective_people"
-                    ].replace(0.0, pd.NA)
-                    daily_eff["points_per_effective_person"] = daily_eff["points"] / daily_eff[
-                        "effective_people"
-                    ].replace(0.0, pd.NA)
-
-                    st.markdown("**Daily efficiency** (work done ÷ effective people working that day)")
-                    st.dataframe(daily_eff, hide_index=True, width="stretch")
-
-                    left2, right2 = st.columns(2)
-                    with left2:
-                        st.subheader("CR productivity")
-                        st.dataframe(
-                            per_actor.query("team == 'CR'").sort_values(
-                                "points_total", ascending=False
-                            ),
-                            hide_index=True,
-                            width="stretch",
-                        )
-                    with right2:
-                        st.subheader("Compliance productivity")
-                        st.dataframe(
-                            per_actor.query("team == 'Compliance'").sort_values(
-                                "points_total", ascending=False
-                            ),
-                            hide_index=True,
-                            width="stretch",
-                        )
-
-                    with st.expander("Diagnostics (sample)", expanded=False):
-                        st.caption(
-                            "Transitions are scored as 1 + risk points (CR uses initial risk; Compliance uses end risk)."
-                        )
-                        sample = (
-                            detailed[
-                                [
-                                    "team",
-                                    "actor",
-                                    "application_id",
-                                    "from_stage",
-                                    "to_stage",
-                                    "risk_level",
-                                    "risk_points",
-                                    "points",
-                                ]
-                            ]
-                            .sort_values("points", ascending=False)
-                            .head(50)
-                        )
-                        st.dataframe(sample, hide_index=True, width="stretch")
 
     with tab_sla:
         st.header("SLA compliance")
