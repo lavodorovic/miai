@@ -329,33 +329,42 @@ def _transition_sankey(
 
     work = work.sort_values("n_apps", ascending=False).head(int(top_k)).copy()
 
-    # Prefer stable ordering by stage id to reduce visual churn.
-    nodes = sorted(set(work["from_stage"]).union(set(work["to_stage"])))
-    node_index = {int(s): i for i, s in enumerate(nodes)}
-    full_labels = [stage_label.get(int(s), f"Stage {int(s)}") for s in nodes]
+    raw_nodes = sorted({int(x) for x in set(work["from_stage"]).union(set(work["to_stage"]))})
+    full_labels = [stage_label.get(int(s), f"Stage {int(s)}") for s in raw_nodes]
 
-    def _compact_label(s: str) -> str:
+    def _compact_label(s: str, *, max_len: int) -> str:
         # Labels look like: "04 · Ops queue · account manager assigned"
         # Keep the step + first meaningful bucket for readability.
         parts = [p.strip() for p in s.split("·")]
         if len(parts) >= 2:
             head = f"{parts[0]} · {parts[1]}"
             # Trim common verbose tails like "(...)" unless it's the primary token.
-            return head.strip()
-        return s
+            out = head.strip()
+        else:
+            out = s.strip()
+        if len(out) > max_len:
+            return out[: max_len - 1] + "…"
+        return out
 
-    labels = [_compact_label(s) for s in full_labels] if compact_node_labels else full_labels
+    # Always keep hover text full; only shorten on-canvas labels when requested.
+    max_canvas = 34 if compact_node_labels else 52
+    labels = [_compact_label(s, max_len=max_canvas) for s in full_labels]
+
+    # Order nodes by stage id (process order) to reduce crossing / label pile-ups.
+    nodes = list(raw_nodes)
+    node_index = {int(s): i for i, s in enumerate(nodes)}
 
     # More nodes => more vertical space needed to avoid label collisions.
-    height = int(max(560, min(980, 320 + 34 * len(nodes))))
+    height = int(max(620, min(1200, 360 + 40 * len(nodes))))
 
     fig = go.Figure(
         data=[
             go.Sankey(
-                arrangement="snap",
+                arrangement="perpendicular",
                 node=dict(
-                    pad=12,
-                    thickness=14,
+                    pad=18,
+                    thickness=18,
+                    line=dict(width=0.5, color="#cfd4dc"),
                     label=labels,
                     customdata=full_labels,
                     hovertemplate="%{customdata}<extra></extra>",
@@ -364,15 +373,20 @@ def _transition_sankey(
                     source=[node_index[int(s)] for s in work["from_stage"].tolist()],
                     target=[node_index[int(s)] for s in work["to_stage"].tolist()],
                     value=[int(v) for v in work["n_apps"].tolist()],
-                    hovertemplate="%{source.label} → %{target.label}<br>%{value} apps<extra></extra>",
+                    hovertemplate=(
+                        "<b>%{source.customdata}</b> → <b>%{target.customdata}</b><br>"
+                        "%{value} apps<extra></extra>"
+                    ),
                 ),
             )
         ]
     )
     fig.update_layout(
-        margin=dict(l=16, r=16, t=28, b=16),
+        margin=dict(l=22, r=22, t=34, b=22),
         height=height,
-        font=dict(size=14, family="Arial, sans-serif", color="#111"),
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        font=dict(size=15, family="system-ui, -apple-system, Segoe UI, Arial, sans-serif", color="#111"),
     )
     st.plotly_chart(fig, use_container_width=True)
 
