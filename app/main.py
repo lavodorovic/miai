@@ -1402,13 +1402,23 @@ Mini example:
                         st.info("All visible transitions are routine full-cohort moves; showing the unfiltered flow.")
                         flow_edges = edges.copy()
 
-                st.markdown("**Transition concentration**")
-                _transition_heatmap(
-                    flow_edges,
-                    top_k=top_k,
-                    min_apps=min_apps,
-                    include_self_loops=include_self,
-                )
+                bars_col, heat_col = st.columns([1, 1])
+                with bars_col:
+                    st.markdown("**Largest transitions**")
+                    _transition_edge_bars(
+                        flow_edges,
+                        top_k=top_k,
+                        min_apps=min_apps,
+                        include_self_loops=include_self,
+                    )
+                with heat_col:
+                    st.markdown("**Transition concentration**")
+                    _transition_heatmap(
+                        flow_edges,
+                        top_k=top_k,
+                        min_apps=min_apps,
+                        include_self_loops=include_self,
+                    )
 
                 with st.expander("Show Sankey flow", expanded=False):
                     st.caption("Optional flow view using the same filters as the heatmap.")
@@ -1426,14 +1436,6 @@ Mini example:
                         ["from_label", "from_stage", "to_label", "to_stage", "n_apps"]
                     ].sort_values("n_apps", ascending=False)
                     st.dataframe(show, hide_index=True, width="stretch")
-
-                with st.expander("Show largest transitions", expanded=False):
-                    _transition_edge_bars(
-                        flow_edges,
-                        top_k=top_k,
-                        min_apps=min_apps,
-                        include_self_loops=include_self,
-                    )
 
     with tab_bottleneck:
         st.header("Bottleneck radar")
