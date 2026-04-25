@@ -1391,7 +1391,7 @@ Mini example:
                         )
                     )
                     st.caption(
-                        "Sankey uses lighter compact labels; hover or open the table below for full stage names."
+                        "Default view is a heatmap; Sankey is available below for optional flow exploration."
                     )
 
                 flow_edges = edges.copy()
@@ -1402,14 +1402,24 @@ Mini example:
                         st.info("All visible transitions are routine full-cohort moves; showing the unfiltered flow.")
                         flow_edges = edges.copy()
 
-                _transition_sankey(
+                st.markdown("**Transition concentration**")
+                _transition_heatmap(
                     flow_edges,
-                    stage_label=mlab,
                     top_k=top_k,
                     min_apps=min_apps,
                     include_self_loops=include_self,
-                    compact_node_labels=True,
                 )
+
+                with st.expander("Show Sankey flow", expanded=False):
+                    st.caption("Optional flow view using the same filters as the heatmap.")
+                    _transition_sankey(
+                        flow_edges,
+                        stage_label=mlab,
+                        top_k=top_k,
+                        min_apps=min_apps,
+                        include_self_loops=include_self,
+                        compact_node_labels=True,
+                    )
 
                 with st.expander("Show transition edges as a table", expanded=False):
                     show = edges[
@@ -1417,24 +1427,13 @@ Mini example:
                     ].sort_values("n_apps", ascending=False)
                     st.dataframe(show, hide_index=True, width="stretch")
 
-                with st.expander("Alternative transition views", expanded=False):
-                    bars_col, heat_col = st.columns([1, 1])
-                    with bars_col:
-                        st.markdown("**Largest transitions**")
-                        _transition_edge_bars(
-                            flow_edges,
-                            top_k=top_k,
-                            min_apps=min_apps,
-                            include_self_loops=include_self,
-                        )
-                    with heat_col:
-                        st.markdown("**Transition concentration**")
-                        _transition_heatmap(
-                            flow_edges,
-                            top_k=top_k,
-                            min_apps=min_apps,
-                            include_self_loops=include_self,
-                        )
+                with st.expander("Show largest transitions", expanded=False):
+                    _transition_edge_bars(
+                        flow_edges,
+                        top_k=top_k,
+                        min_apps=min_apps,
+                        include_self_loops=include_self,
+                    )
 
     with tab_bottleneck:
         st.header("Bottleneck radar")
