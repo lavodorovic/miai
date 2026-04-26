@@ -45,3 +45,11 @@ def test_team_attention_cases_are_investigable() -> None:
     df = qm.run("team_attention_cases", product_type=None, date_range=("2026-04-04", "2026-04-24"))
     assert {"application_id", "actor", "team", "days_in_stage"}.issubset(df.columns)
 
+
+def test_team_completions_by_day_shape() -> None:
+    con = duckdb.connect(str(ROOT / "data" / "relio_analytics.db"), read_only=True)
+    qm = QueryManager(con)
+    df = qm.run("team_completions_by_day", product_type=None, date_range=("2026-04-04", "2026-04-24"))
+    assert {"day", "actor", "team", "n_completions"}.issubset(df.columns)
+    assert (df["n_completions"] >= 0).all()
+

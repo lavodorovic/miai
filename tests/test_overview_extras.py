@@ -75,6 +75,14 @@ def test_throughput_daily_matches_period_losses_terminal_events() -> None:
     assert n_thr == losses
 
 
+def test_kpi_inflight_stale_24h_runs() -> None:
+    con = _connect()
+    qm = QueryManager(con)
+    df = qm.run("kpi_inflight_stale_24h", product_type=None, date_range=("2026-04-04", "2026-04-24"))
+    assert "n_stale_24h" in df.columns
+    assert int(df.iloc[0]["n_stale_24h"]) >= 0
+
+
 def test_sla_breach_overview_has_only_expected_statuses() -> None:
     con = _connect()
     qm = QueryManager(con)

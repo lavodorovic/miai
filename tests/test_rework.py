@@ -36,3 +36,21 @@ def test_rework_cases_are_actionable_when_present() -> None:
     df = qm.run("rework_cases", product_type=None, date_range=("2026-04-04", "2026-04-24"))
     assert {"application_id", "n_interactions", "compliance_reopened"}.issubset(df.columns)
 
+
+def test_rework_interaction_dist_sums_to_cohort() -> None:
+    con = duckdb.connect(str(ROOT / "data" / "relio_analytics.db"), read_only=True)
+    qm = QueryManager(con)
+    dr = ("2026-04-04", "2026-04-24")
+    dist = qm.run("rework_interaction_dist", product_type=None, date_range=dr)
+    assert {"interaction_bucket", "n_apps"}.issubset(dist.columns)
+    cohort = int(
+        con.execute(
+            """
+            SELECT COUNT(DISTINCT application_id) FROM audit_logs
+            WHERE timestamp::DATE BETWEEN ? AND ?
+            """,
+            [dr[0], dr[1]],
+        ).fetchone()[0]
+    )
+    assert int(dist["n_apps"].sum()) == cohort
+

@@ -79,3 +79,13 @@ def test_load_period_dashboard_runs(period_db: duckdb.DuckDBPyConnection) -> Non
     assert pd_data.n_movers >= 0
     assert pd_data.n_arrivals >= 0
     assert pd_data.n_losses >= 0
+
+
+def test_period_arrivals_losses_by_day(period_db: duckdb.DuckDBPyConnection) -> None:
+    qm = QueryManager(period_db)
+    dr = ("2026-04-01", "2026-04-30")
+    daily = qm.run("period_arrivals_losses_by_day", product_type=None, date_range=dr)
+    assert "series" in daily.columns
+    assert "day" in daily.columns
+    assert "n" in daily.columns
+    assert set(daily["series"].unique()) <= {"arrivals", "losses"}

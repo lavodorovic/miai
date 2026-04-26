@@ -627,13 +627,17 @@ def _team_backlog_throughput_chart(df: pd.DataFrame) -> None:
     work["suggested_rebalance_flag"] = work["suggested_rebalance_flag"].fillna(False).astype(bool)
     chart = (
         alt.Chart(work)
-        .mark_circle(opacity=0.85)
+        .mark_circle(opacity=0.9, size=80)
         .encode(
             x=alt.X("completed_7d:Q", title="Completed last 7 days"),
             y=alt.Y("open_cases_now:Q", title="Open cases now"),
-            size=alt.Size("completed_30d:Q", title="Completed last 30 days", legend=None),
-            color=alt.Color("team:N", title="Team"),
-            shape=alt.Shape("suggested_rebalance_flag:N", title="Needs attention"),
+            size=alt.Size("completed_30d:Q", title="Completed 30d", scale=alt.Scale(range=[40, 300])),
+            color=alt.Color(
+                "p90_age_open_days:Q",
+                title="P90 open age (days)",
+                scale=alt.Scale(scheme="orangered", reverse=True),
+            ),
+            shape=alt.Shape("team:N", title="Team"),
             tooltip=[
                 "actor_label",
                 "open_cases_now",
@@ -642,8 +646,9 @@ def _team_backlog_throughput_chart(df: pd.DataFrame) -> None:
                 alt.Tooltip("p90_age_open_days:Q", format=".1f", title="P90 open age days"),
             ],
         )
-        .properties(height=320)
+        .properties(height=360)
     )
+    st.caption("Point colour encodes p90 open age; size is completions in the last 30 days.")
     st.altair_chart(chart, width="stretch")
 
 
@@ -776,6 +781,446 @@ def _rework_product_chart(df: pd.DataFrame) -> None:
         .properties(height=max(160, 44 * len(work)))
     )
     st.altair_chart(chart, width="stretch")
+
+
+def _overview_sla_stacked_bars(sla: pd.DataFrame) -> None:
+    if sla.empty:
+        return
+    order_status = ["breached", "at_risk", "ok"]
+    colors = {
+        "breached": "#e45756",
+        "at_risk": "#f58518",
+        "ok": "#54a24b",
+    }
+    c = (
+        alt.Chart(sla)
+        .mark_bar()
+        .encode(
+            x=alt.X("sla_area:N", title="SLA area", sort=None),
+            y=alt.Y("n_applications:Q", title="In-flight applications"),
+            color=alt.Color(
+                "status:N",
+                title="Status",
+                sort=order_status,
+                scale=alt.Scale(
+                    domain=order_status,
+                    range=[colors["breached"], colors["at_risk"], colors["ok"]],
+                ),
+            ),
+            tooltip=["sla_area", "status", "n_applications"],
+        )
+        .properties(height=220)
+    )
+    st.altair_chart(c, width="stretch")
+
+
+def _throughput_daily_chart(thr: pd.DataFrame) -> None:
+    if thr.empty or "n_terminated" not in thr.columns:
+        return
+    thr = thr.copy()
+    thr["day"] = pd.to_datetime(thr["day"], utc=True, errors="coerce")
+    tline = (
+        alt.Chart(thr)
+        .mark_line(interpolate="monotone", strokeWidth=1.2)
+        .encode(
+            x=alt.X("day:T", title="Date"),
+            y=alt.Y("n_terminated:Q", title="Terminal / day"),
+            tooltip=[alt.Tooltip("day:T", title="Day"), "n_terminated"],
+        )
+    )
+    mline = (
+        alt.Chart(thr)
+        .mark_line(
+            color="#94a3b8",
+            strokeWidth=1,
+            strokeDash=[4, 3],
+        )
+        .encode(
+            x=alt.X("day:T", title="Date"),
+            y=alt.Y("n_terminated_ma7:Q", title=""),
+            tooltip=[alt.Tooltip("day:T", title="Day"), "n_terminated_ma7"],
+        )
+    )
+    c = tline + mline
+    c = c.properties(height=200)
+    st.altair_chart(c, width="stretch")
+
+
+def _cohort_in_flight_line(kpi_df: pd.DataFrame) -> None:
+    if kpi_df.empty or "pct_in_flight_as_of" not in kpi_df.columns:
+        return
+    c = (
+        alt.Chart(kpi_df)
+        .mark_line(point=True, strokeWidth=1.1)
+        .encode(
+            x=alt.X("cohort_month:T", title="Cohort (anchor month)"),
+            y=alt.Y("pct_in_flight_as_of:Q", title="% in-flight (as of)"),
+            tooltip=[
+                "cohort_month",
+                "n_applications",
+                alt.Tooltip("pct_in_flight_as_of:Q", format=".1f", title="% in-flight"),
+            ],
+        )
+        .properties(height=240)
+    )
+    st.altair_chart(c, width="stretch")
+
+
+def _cohort_survival_lines(surv: pd.DataFrame) -> None:
+    if surv.empty:
+        return
+    long = surv.melt(
+        id_vars=["cohort_month", "n_apps"],
+        value_vars=["pct_alive_7d", "pct_alive_14d", "pct_alive_30d", "pct_alive_60d"],
+        var_name="horizon",
+        value_name="pct_alive",
+    )
+    hmap = {
+        "pct_alive_7d": "+7d",
+        "pct_alive_14d": "+14d",
+        "pct_alive_30d": "+30d",
+        "pct_alive_60d": "+60d",
+    }
+    long["horizon"] = long["horizon"].map(hmap)
+    c = (
+        alt.Chart(long)
+        .mark_line(point=True)
+        .encode(
+            x=alt.X("cohort_month:T", title="Cohort (anchor month)"),
+            y=alt.Y("pct_alive:Q", title="% still in-flight (survival)"),
+            color=alt.Color("horizon:N", title="Window"),
+            tooltip=[
+                "cohort_month",
+                "horizon",
+                "n_apps",
+                alt.Tooltip("pct_alive:Q", format=".1f", title="pct alive"),
+            ],
+        )
+        .properties(height=260)
+    )
+    st.altair_chart(c, width="stretch")
+
+
+def _cohort_time_to_offer_bars(tto: pd.DataFrame) -> None:
+    if tto.empty:
+        return
+    long = tto.melt(
+        id_vars=["cohort_month", "n_with_offer"],
+        value_vars=["p50_days_to_offer", "p90_days_to_offer"],
+        var_name="metric",
+        value_name="days",
+    )
+    lab = {
+        "p50_days_to_offer": "p50",
+        "p90_days_to_offer": "p90",
+    }
+    long["metric"] = long["metric"].map(lab)
+    c = (
+        alt.Chart(long)
+        .mark_bar()
+        .encode(
+            x=alt.X("cohort_month:T", title="Cohort (anchor month)"),
+            y=alt.Y("days:Q", title="Days to first offer"),
+            xOffset="metric:N",
+            color=alt.Color("metric:N", title=""),
+            tooltip=["cohort_month", "n_with_offer", "metric", alt.Tooltip("days:Q", format=".1f")],
+        )
+        .properties(height=260)
+    )
+    st.altair_chart(c, width="stretch")
+
+
+def _cohort_stage_heatmap(snap: pd.DataFrame) -> None:
+    if snap.empty:
+        return
+    c = (
+        alt.Chart(snap)
+        .mark_rect()
+        .encode(
+            x=alt.X("cohort_month:T", title="Cohort (anchor month)"),
+            y=alt.Y("step_order:O", title="Stage (order)"),
+            color=alt.Color("n_applications:Q", title="Apps", scale=alt.Scale(scheme="blues")),
+            tooltip=["cohort_month", "step_order", "n_applications"],
+        )
+        .properties(height=min(480, 14 * snap["step_order"].nunique()))
+    )
+    st.altair_chart(c, width="stretch")
+
+
+def _cohort_multi_trajectory_charts(multi: pd.DataFrame) -> None:
+    if multi.empty:
+        return
+    a, b = st.columns(2)
+    with a:
+        st.caption("In-flight % by cohort month")
+        c1 = (
+            alt.Chart(multi)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("cohort_month:T", title="Cohort (anchor month)"),
+                y=alt.Y("pct_in_flight_as_of:Q", title="% in-flight (as of)"),
+                tooltip=["cohort_month", "n_apps", "pct_in_flight_as_of"],
+            )
+            .properties(height=220)
+        )
+        st.altair_chart(c1, width="stretch")
+    with b:
+        mlt = multi.melt(
+            id_vars=["cohort_month"],
+            value_vars=["pct_alive_7d", "pct_alive_14d", "pct_alive_30d", "pct_alive_60d"],
+            var_name="horizon",
+            value_name="pct",
+        )
+        hmap = {
+            "pct_alive_7d": "+7d",
+            "pct_alive_14d": "+14d",
+            "pct_alive_30d": "+30d",
+            "pct_alive_60d": "+60d",
+        }
+        mlt["horizon"] = mlt["horizon"].map(hmap)
+        st.caption("Survival % by horizon and cohort")
+        c2 = (
+            alt.Chart(mlt)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("cohort_month:T", title="Cohort (anchor month)"),
+                y=alt.Y("pct:Q", title="% (survival)"),
+                color=alt.Color("horizon:N", title="Horizon"),
+            )
+            .properties(height=220)
+        )
+        st.altair_chart(c2, width="stretch")
+    tto2 = multi.dropna(subset=["p50_days_to_offer"], how="all")
+    if not tto2.empty and "p50_days_to_offer" in tto2.columns:
+        tlong = tto2.melt(
+            id_vars=["cohort_month"],
+            value_vars=[c for c in ("p50_days_to_offer", "p90_days_to_offer") if c in tto2.columns],
+            var_name="q",
+            value_name="days",
+        )
+        tlong["q"] = tlong["q"].map({"p50_days_to_offer": "p50", "p90_days_to_offer": "p90"})
+        tlong = tlong.dropna(subset=["days"])
+        if not tlong.empty:
+            st.caption("Time to first offer (p50 / p90) for cohorts with an offer in window")
+            c3 = (
+                alt.Chart(tlong)
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X("cohort_month:T", title="Cohort (anchor month)"),
+                    y=alt.Y("days:Q", title="Days to first offer"),
+                    color=alt.Color("q:N", title=""),
+                )
+                .properties(height=220)
+            )
+            st.altair_chart(c3, width="stretch")
+
+
+def _period_start_end_grouped_bars(
+    start_df: pd.DataFrame,
+    end_df: pd.DataFrame,
+    *,
+    top_n: int = 14,
+) -> None:
+    if start_df.empty and end_df.empty:
+        return
+    s = (
+        start_df.rename(columns={"active_applications": "start_n"})[
+            ["step_order", "step_label", "start_n"]
+        ].copy()
+        if not start_df.empty
+        else pd.DataFrame(columns=["step_order", "step_label", "start_n"])
+    )
+    e = (
+        end_df.rename(columns={"active_applications": "end_n"})[
+            ["step_order", "step_label", "end_n"]
+        ].copy()
+        if not end_df.empty
+        else pd.DataFrame(columns=["step_order", "step_label", "end_n"])
+    )
+    m = s.merge(
+        e,
+        on=["step_order", "step_label"],
+        how="outer",
+    ).fillna(0.0)
+    m["max_pair"] = m[["start_n", "end_n"]].max(axis=1)
+    m = m.sort_values("max_pair", ascending=False).head(int(top_n))
+    long = m.melt(
+        id_vars=["step_label", "step_order"],
+        value_vars=["start_n", "end_n"],
+        var_name="which",
+        value_name="n",
+    )
+    long["which"] = long["which"].map({"start_n": "Start snapshot", "end_n": "End snapshot"})
+    c = (
+        alt.Chart(long)
+        .mark_bar()
+        .encode(
+            y=alt.Y("step_label:N", sort=alt.EncodingSortField(field="n", op="max", order="descending"), title="Stage"),
+            x=alt.X("n:Q", title="Applications"),
+            color=alt.Color("which:N", title=""),
+            yOffset="which:N",
+            tooltip=["step_label", "which", "n", "step_order"],
+        )
+        .properties(height=min(420, 28 * long["step_label"].nunique()))
+    )
+    st.altair_chart(c, width="stretch")
+
+
+def _period_arrivals_losses_by_day(daily: pd.DataFrame) -> None:
+    if daily.empty or "day" not in daily.columns:
+        return
+    w = daily.copy()
+    w["day"] = pd.to_datetime(w["day"], errors="coerce")
+    c = (
+        alt.Chart(w)
+        .mark_line(interpolate="monotone", point=True, strokeWidth=1.1)
+        .encode(
+            x=alt.X("day:T", title="Day"),
+            y=alt.Y("n:Q", title="Count / day"),
+            color=alt.Color(
+                "series:N",
+                title="",
+                scale=alt.Scale(domain=["arrivals", "losses"], range=["#4c78a8", "#e45756"]),
+            ),
+            tooltip=[alt.Tooltip("day:T", title="Day"), "series", "n"],
+        )
+        .properties(height=200)
+    )
+    st.altair_chart(c, width="stretch")
+
+
+def _team_closures_heatmap(comp: pd.DataFrame, *, top_actors: int = 12) -> None:
+    if comp.empty:
+        return
+    tot = comp.groupby("actor", as_index=False)["n_completions"].sum()
+    top = set(
+        tot.sort_values("n_completions", ascending=False)
+        .head(int(top_actors))["actor"]
+        .astype(str)
+        .tolist()
+    )
+    w = comp.loc[comp["actor"].astype(str).isin(top)].copy()
+    if w.empty:
+        st.info("No completion rows for an actor heatmap in this window.")
+        return
+    w["day"] = pd.to_datetime(w["day"], errors="coerce")
+    w["label"] = w["team"].astype(str) + " · " + w["actor"].astype(str)
+    w["__tot"] = w.groupby("label", observed=True)["n_completions"].transform("sum")
+    w = w.sort_values(["__tot", "label", "day"], ascending=[False, True, True])
+    order = w["label"].unique().tolist()
+    c = (
+        alt.Chart(w)
+        .mark_rect()
+        .encode(
+            x=alt.X("day:T", title="Day"),
+            y=alt.Y("label:N", title="Actor", sort=order),
+            color=alt.Color("n_completions:Q", title="Completions", scale=alt.Scale(scheme="tealblues")),
+            tooltip=["day", "actor", "team", "n_completions"],
+        )
+        .properties(height=min(420, 22 * w["label"].nunique()))
+    )
+    st.caption("Top actors by total completions in the window; each cell is distinct apps closed that day.")
+    st.altair_chart(c, width="stretch")
+
+
+def _rework_interaction_dist_chart(dist: pd.DataFrame) -> None:
+    if dist.empty:
+        return
+    c = (
+        alt.Chart(dist)
+        .mark_bar()
+        .encode(
+            x=alt.X("interaction_bucket:N", title="Interaction loops (started)", sort=None),
+            y=alt.Y("n_apps:Q", title="Applications"),
+            tooltip=["interaction_bucket", "n_apps"],
+        )
+        .properties(height=220)
+    )
+    st.altair_chart(c, width="stretch")
+
+
+def _investigator_staged_gantt(staged: pd.DataFrame) -> None:
+    if len(staged) < 2:
+        return
+    staged = staged.sort_values("timestamp").reset_index(drop=True)
+    rows: list[dict] = []
+    for i in range(len(staged) - 1):
+        t0 = pd.Timestamp(staged.loc[i, "timestamp"])
+        t1 = pd.Timestamp(staged.loc[i + 1, "timestamp"])
+        stord = int(staged.loc[i, "stage_order"])
+        rows.append(
+            {
+                "t0": t0,
+                "t1": t1,
+                "stage_key": f"{stord:02d}",
+                "stage_order": stord,
+            }
+        )
+    segs = pd.DataFrame(rows)
+    if segs.empty:
+        return
+    y_order = [f"{i:02d}" for i in sorted(segs["stage_order"].unique().tolist())]
+    c = (
+        alt.Chart(segs)
+        .mark_bar()
+        .encode(
+            y=alt.Y("stage_key:N", sort=y_order, title="Stage (order at segment start)"),
+            x=alt.X("t0:T", title=""),
+            x2=alt.X2("t1:T"),
+            tooltip=["stage_key", alt.Tooltip("t0:T", title="From"), alt.Tooltip("t1:T", title="To")],
+        )
+        .properties(height=min(520, 32 * segs["stage_key"].nunique()))
+    )
+    st.altair_chart(c, width="stretch")
+
+
+def _capacity_fte_sweep_chart(
+    *,
+    inflow: float,
+    current_cycle_time: float,
+    base_fte: float,
+    backlog: float,
+) -> None:
+    from analytics.capacity import project_backlog_clear_days, project_cycle_time_days, project_wip
+
+    rows: list[dict] = []
+    for total_fte in range(1, 41):
+        pct = project_cycle_time_days(
+            float(current_cycle_time),
+            base_fte=float(base_fte),
+            new_fte=float(total_fte),
+        )
+        wip = project_wip(float(inflow), float(pct))
+        rows.append(
+            {
+                "total_fte": total_fte,
+                "projected_wip": wip,
+                "projected_ct": pct,
+            }
+        )
+    dfp = pd.DataFrame(rows)
+    c1 = (
+        alt.Chart(dfp)
+        .mark_line()
+        .encode(
+            x=alt.X("total_fte:O", title="Total FTE (1–40)"),
+            y=alt.Y("projected_wip:Q", title="Steady-state WIP (apps)"),
+        )
+    )
+    c2 = (
+        alt.Chart(dfp)
+        .mark_line()
+        .encode(
+            x=alt.X("total_fte:O", title="Total FTE (1–40)"),
+            y=alt.Y("projected_ct:Q", title="Projected cycle time p50 (days)"),
+        )
+    )
+    st.caption("Sweep assumes the same inflow, baseline FTE, and current cycle time as above; FTE = CR + Compliance.")
+    a, b = st.columns(2)
+    with a:
+        st.altair_chart(c1.properties(height=220), width="stretch")
+    with b:
+        st.altair_chart(c2.properties(height=220), width="stretch")
 
 
 def main() -> None:
@@ -926,6 +1371,29 @@ def main() -> None:
         s2.metric("CR breached (as of now)", f"{_sla_n('CR review', 'breached'):,}")
         s3.metric("Compliance breached (as of now)", f"{_sla_n('Compliance', 'breached'):,}")
 
+        stale_df = (
+            qm.run("kpi_inflight_stale_24h", product_type=product_filter, date_range=date_range)
+            if date_range is not None
+            else pd.DataFrame()
+        )
+        n_stale_24h = int(stale_df.iloc[0]["n_stale_24h"]) if len(stale_df) else 0
+        st.caption("Stale 24h = in-flight apps whose last event is over 24h ago (excludes completed/cancelled).")
+        st.metric("Stale in-flight (last event 24h+ ago)", f"{n_stale_24h:,}")
+
+        ch1, ch2 = st.columns(2)
+        with ch1:
+            st.markdown("**Throughput in window** (daily terminal + 7d MA as dashed)")
+            if thr.empty or date_range is None:
+                st.caption("Select a date range to see the throughput series.")
+            else:
+                _throughput_daily_chart(thr)
+        with ch2:
+            st.markdown("**SLA status mix** (in-flight, by area)")
+            if sla.empty:
+                st.caption("No in-flight rows for SLA breakdown.")
+            else:
+                _overview_sla_stacked_bars(sla)
+
         st.subheader("What needs attention")
         for insight in _executive_insights(
             n_active=n_active,
@@ -969,12 +1437,13 @@ def main() -> None:
             else:
                 _who_has_ball_chart(ball)
         with c_r:
-            st.subheader("SLA status (in-flight)")
+            st.subheader("SLA status (in-flight) — table")
             st.caption(legend_subtitle("sla_breach_overview"))
             if sla.empty:
                 st.info("No in-flight applications in this filter.")
             else:
-                st.dataframe(sla, hide_index=True, width="stretch")
+                with st.expander("Raw counts by area and status", expanded=False):
+                    st.dataframe(sla, hide_index=True, width="stretch")
 
         with st.expander("Drill-down: latest stage per application (34 steps)", expanded=False):
             st.caption(legend_subtitle("funnel_latest_stage"))
@@ -1068,6 +1537,17 @@ def main() -> None:
                 )
                 st.caption("Pink rows: repeated review / interaction actions (operational loops).")
 
+                staged = qm.run(
+                    "application_staged_timeline",
+                    product_type=product_filter,
+                    date_range=None,
+                    application_id=inv_id,
+                )
+                if not staged.empty and len(staged) >= 2:
+                    st.subheader("In-stage residence (Gantt, segment between consecutive events)")
+                    st.caption("Each bar is the stage while the case stayed until the next audit row; not net dwell.")
+                    _investigator_staged_gantt(staged)
+
                 dwell = qm.run(
                     "application_dwell",
                     product_type=product_filter,
@@ -1155,6 +1635,8 @@ def main() -> None:
                 st.info("No cohort rows for this anchor and as-of date.")
             else:
                 st.dataframe(kpi_df, hide_index=True, width="stretch")
+                st.markdown("**In-flight % (chart)**")
+                _cohort_in_flight_line(kpi_df)
         elif single_kpi == "survival":
             horizon = st.selectbox(
                 "Horizon",
@@ -1175,6 +1657,8 @@ def main() -> None:
                 col = f"pct_alive_{horizon}d"
                 show = surv[["cohort_month", "n_apps", col]].rename(columns={col: "pct_alive"})
                 st.dataframe(show, hide_index=True, width="stretch")
+                st.markdown("**Survival curves (all horizons)**")
+                _cohort_survival_lines(surv)
         else:
             tto = qm.run(
                 "cohort_time_to_offer",
@@ -1187,6 +1671,8 @@ def main() -> None:
                 st.info("No offer rows for this anchor/as-of date.")
             else:
                 st.dataframe(tto, hide_index=True, width="stretch")
+                st.markdown("**Time to first offer (p50 / p90)**")
+                _cohort_time_to_offer_bars(tto)
 
         st.subheader("Multi-KPI (combined table)")
         multi = qm.run(
@@ -1200,6 +1686,8 @@ def main() -> None:
             st.info("No cohort rows for this anchor and as-of date.")
         else:
             st.dataframe(multi, hide_index=True, width="stretch")
+            st.markdown("**Multi-KPI (charts)**")
+            _cohort_multi_trajectory_charts(multi)
 
         st.subheader("Stage mix (as-of date)")
         st.caption(legend_subtitle("cohort_status_snapshot"))
@@ -1213,6 +1701,8 @@ def main() -> None:
         if snap.empty:
             st.info("No rows for stage mix snapshot.")
         else:
+            st.markdown("**Cohort × stage (heatmap)**")
+            _cohort_stage_heatmap(snap)
             pivot = snap.pivot_table(
                 index="cohort_month",
                 columns="step_order",
@@ -1348,6 +1838,32 @@ Mini example:
                 st.info("No cohort rows for end snapshot with the current filters.")
             else:
                 _funnel_chart(end_plot)
+
+            st.subheader("Start vs end — same cohort (largest stages by volume)")
+            st.caption(
+                "Stacked by snapshot side: for each process stage, how many applications were in that bucket at "
+                "start-of-period vs end-of-period (latest pre-window stage vs end-of-window stage)."
+            )
+            start_plot2 = pd_board.start_snapshot.query("active_applications > 0").copy()
+            if not start_plot2.empty or not end_plot.empty:
+                _period_start_end_grouped_bars(start_plot2, end_plot)
+            else:
+                st.caption("No data for start vs end stage comparison in this window.")
+
+            daily_al = qm.run(
+                "period_arrivals_losses_by_day",
+                product_type=product_filter,
+                date_range=date_range,
+            )
+            st.subheader("Arrivals and losses by day (in period)")
+            st.caption(
+                "Arrivals: first product-filtered audit day per application; losses: terminal event that day, "
+                "per aligned cohort definitions in period_arrivals_losses."
+            )
+            if not daily_al.empty:
+                _period_arrivals_losses_by_day(daily_al)
+            else:
+                st.caption("No per-day series for this window.")
 
             st.subheader("In-period transition flow")
             st.caption(legend_subtitle("period_transition_matrix"))
@@ -1530,6 +2046,18 @@ Mini example:
                 st.subheader("Loop rate by product")
                 _rework_product_chart(by_prod)
 
+            dist = qm.run(
+                "rework_interaction_dist",
+                product_type=product_filter,
+                date_range=date_range,
+            )
+            st.subheader("Interaction loops in cohort (distribution)")
+            st.caption("How many times INTERACTION_STARTED fired per app in the selected window and product.")
+            if dist.empty:
+                st.caption("No distribution data for this filter.")
+            else:
+                _rework_interaction_dist_chart(dist)
+
             st.subheader("Cases to inspect")
             if cases.empty:
                 st.info("No high-rework cases for this filter.")
@@ -1592,6 +2120,18 @@ Mini example:
                     "Each point is an actor. Higher means more open backlog; farther right means more cases completed in the last 7 days."
                 )
                 _team_backlog_throughput_chart(wl)
+
+                team_day = qm.run(
+                    "team_completions_by_day",
+                    product_type=product_filter,
+                    date_range=date_range,
+                )
+                st.subheader("Completions by actor and day (heatmap)")
+                st.caption("Terminal outcomes per day; top actors by total completions in the period.")
+                if team_day.empty:
+                    st.caption("No per-day completion rows for this window.")
+                else:
+                    _team_closures_heatmap(team_day)
 
                 st.subheader("Attention list")
                 if attention.empty:
@@ -1825,18 +2365,20 @@ Mini example:
 
             if not trend.empty:
                 st.subheader("Trend (weekly)")
-                chart = (
-                    alt.Chart(trend)
-                    .mark_line(point=True)
-                    .encode(
-                        x=alt.X("week:O", title="Week"),
-                        y=alt.Y("pct_within:Q", title="% within SLA"),
-                        color=alt.Color("sla_name:N", title="SLA"),
-                        tooltip=["week", "sla_name", alt.Tooltip("pct_within:Q", format=".1f")],
-                    )
-                    .properties(height=300)
+                line = alt.Chart(trend).mark_line(point=True, strokeWidth=1.1).encode(
+                    x=alt.X("week:O", title="Week"),
+                    y=alt.Y("pct_within:Q", title="% within SLA", scale=alt.Scale(domain=[0, 100])),
+                    color=alt.Color("sla_name:N", title="SLA"),
+                    tooltip=["week", "sla_name", alt.Tooltip("pct_within:Q", format=".1f")],
                 )
-                st.altair_chart(chart, width="stretch")
+                target = (
+                    alt.Chart(pd.DataFrame({"y": [90.0]}))
+                    .mark_rule(strokeDash=[4, 3], color="#94a3b8")
+                    .encode(y="y:Q")
+                )
+                c = (line + target).properties(height=300)
+                st.caption("Grey dashed line: 90% within-SLA target (illustrative).")
+                st.altair_chart(c, width="stretch")
 
     with tab_capacity:
         st.header("Capacity what-if")
@@ -1954,6 +2496,14 @@ Mini example:
                         "Projected WIP differs a lot from current WIP. "
                         "Try a different cycle time definition (or override) to match your planning goal."
                     )
+
+                st.subheader("FTE sweep (1–40 total) at current inflow and cycle time")
+                _capacity_fte_sweep_chart(
+                    inflow=float(inflow),
+                    current_cycle_time=float(current_cycle_time),
+                    base_fte=int(base_fte),
+                    backlog=float(backlog_inflight),
+                )
 
                 st.caption(
                     f"Backlog clear time at current inflow: **{clear_days:.1f} days** (naive: backlog/inflow)."
