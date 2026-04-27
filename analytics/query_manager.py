@@ -8,7 +8,8 @@ Placeholders
 
 ``{{PRODUCT_TYPE_FILTER_A}}``
     Same predicate on ``audit_logs AS a`` / ``v_audit_staged AS a``: ``a.product_type = '…'``.
-    Required in ``FROM audit_logs AS a JOIN v_team AS t`` (both expose ``product_type`` — unqualified binds fail).
+    Required when **both** sides of a join expose ``product_type`` (e.g. ``JOIN v_team AS t``, or a **cohort**
+    CTE that selected ``product_type`` from ``audit_logs`` and is joined back to ``audit_logs AS a``).
 
 ``{{APP_ID_FILTER}}``
     ``application_id = '…'`` when an ID is provided; else ``FALSE`` (returns no rows).

@@ -17,7 +17,7 @@ per_app AS (
         MAX(CASE WHEN a.action = 'COMPLIANCE_REVIEW_STARTED' THEN a.timestamp ELSE NULL END) AS last_compliance_start_at
     FROM audit_logs AS a
     INNER JOIN cohort AS c ON a.application_id = c.application_id
-    WHERE {{PRODUCT_TYPE_FILTER}}
+    WHERE {{PRODUCT_TYPE_FILTER_A}}
     GROUP BY c.product_type, a.application_id
 )
 SELECT

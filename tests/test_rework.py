@@ -34,7 +34,17 @@ def test_rework_cases_are_actionable_when_present() -> None:
     con = duckdb.connect(str(ROOT / "data" / "relio_analytics.db"), read_only=True)
     qm = QueryManager(con)
     df = qm.run("rework_cases", product_type=None, date_range=("2026-04-04", "2026-04-24"))
-    assert {"application_id", "n_interactions", "compliance_reopened"}.issubset(df.columns)
+    assert {"application_id", "n_interactions", "compliance_reopened", "primary_team"}.issubset(df.columns)
+
+
+def test_rework_by_product_no_ambiguous_product_when_cohort_carries_product_type() -> None:
+    """Regression: cohort includes product_type + join audit_logs AS a → use FILTER_A on ``a``."""
+    con = duckdb.connect(str(ROOT / "data" / "relio_analytics.db"), read_only=True)
+    qm = QueryManager(con)
+    dr = ("2026-04-04", "2026-04-24")
+    df = qm.run("rework_by_product", product_type="Business Account", date_range=dr)
+    assert len(df) >= 1
+    assert "product_type" in df.columns
 
 
 def test_rework_outcome_by_loops_matches_interaction_dist() -> None:

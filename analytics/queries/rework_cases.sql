@@ -18,6 +18,24 @@ per_app AS (
     INNER JOIN cohort AS c ON a.application_id = c.application_id
     WHERE {{PRODUCT_TYPE_FILTER}}
     GROUP BY a.application_id
+),
+with_team AS (
+    SELECT
+        p.application_id,
+        p.n_interactions,
+        p.n_answers_edit,
+        p.first_label_at,
+        p.last_compliance_start_at,
+        p.latest_at,
+        p.latest_actor,
+        p.latest_action,
+        COALESCE(vt.team, 'Other') AS primary_team
+    FROM per_app AS p
+    LEFT JOIN v_team AS vt
+        ON vt.application_id = p.application_id
+        AND vt.timestamp = p.latest_at
+        AND vt.actor = p.latest_actor
+        AND vt.action = p.latest_action
 )
 SELECT
     application_id,
@@ -31,8 +49,9 @@ SELECT
     END AS compliance_reopened,
     latest_at,
     latest_actor,
-    latest_action
-FROM per_app
+    latest_action,
+    primary_team
+FROM with_team
 WHERE n_interactions >= 2
    OR n_answers_edit >= 1
    OR (

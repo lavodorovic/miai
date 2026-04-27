@@ -851,13 +851,26 @@ def run_rework(*, qm: QueryManager, product_filter, date_range, min_d, max_d, pr
             st.subheader("Offer reach by interaction intensity")
             _rework_outcome_offer_rate_chart(out_loops)
     
+        cases_view = filter_dataframe(
+            cases.copy(),
+            ui_filters,
+            team_col="primary_team",
+            actor_col="latest_actor",
+            stage_col=None,
+        )
+
         st.subheader("Cases to inspect")
         if cases.empty:
             st.info("No high-rework cases for this filter.")
+        elif cases_view.empty:
+            st.info(
+                "No cases match **View filters** (team / actor). "
+                "Set Team to **(All)** or clear actor text."
+            )
         else:
-            st.dataframe(cases.head(10), hide_index=True, width="stretch")
+            st.dataframe(cases_view.head(10), hide_index=True, width="stretch")
             investigation_launcher(
-                cases,
+                cases_view,
                 label="Send rework case to App investigator",
                 key="rework_case_investigate",
                 scope=investigation_scope_key(product_choice, date_range),
