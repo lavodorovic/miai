@@ -758,7 +758,9 @@ def run_period(*, qm: QueryManager, product_filter, date_range, min_d, max_d, pr
                 st.subheader("Arrivals and terminal events by day (in period)")
                 st.caption(
                     "Blue: first product-filtered audit day per cohort app. Red: distinct apps with any terminal "
-                    "action that day (includes successful master-data submission, not only reject/cancel)."
+                    "action that day (includes successful master-data submission, not only reject/cancel). "
+                    "Terminal can be higher than arrivals: many cohort apps may finish on the same day; "
+                    "arrivals only count apps whose first audit day is that calendar day."
                 )
                 if not daily_al.empty:
                     _period_arrivals_losses_by_day(daily_al)

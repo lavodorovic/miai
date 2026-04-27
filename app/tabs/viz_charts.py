@@ -1326,43 +1326,47 @@ def _period_arrivals_losses_by_day(daily: pd.DataFrame) -> None:
         return
     w = daily.copy()
     w["day"] = pd.to_datetime(w["day"], errors="coerce")
-    w["series_display"] = (
-        w["series"]
-        .map(
-            {
-                "arrivals": "Arrivals",
-                "losses": "Terminal events",
-            }
-        )
-        .fillna(w["series"].astype(str))
-    )
+    w = w.dropna(subset=["day"])
+    if w.empty:
+        return
+
+    # Full calendar grid so a series with no rows on a given day reads as 0 (not “missing / starts late”).
+    pt = w.pivot_table(index="day", columns="series", values="n", aggfunc="sum")
+    for col in ("arrivals", "losses"):
+        if col not in pt.columns:
+            pt[col] = 0
+    d0 = w["day"].min().normalize()
+    d1 = w["day"].max().normalize()
+    full = pd.date_range(d0, d1, freq="D")
+    pt = pt.reindex(full)[["arrivals", "losses"]].fillna(0).astype("int64")
+    long = pt.stack().reset_index()
+    long.columns = ["day", "series", "n"]
+    long["series_display"] = long["series"].map(
+        {"arrivals": "Arrivals", "losses": "Terminal events"}
+    ).fillna(long["series"].astype(str))
+
     c = (
-        alt.Chart(w)
+        alt.Chart(long)
         .mark_line(interpolate="monotone", point=True, strokeWidth=1.1)
         .encode(
             x=alt.X("day:T", title="Day"),
             y=alt.Y(
                 "n:Q",
                 title="Count per day",
-                axis=alt.Axis(
-                    titleAngle=0,
-                    titleAlign="left",
-                    titleAnchor="start",
-                    titleY=-22,
-                    titleX=-8,
-                ),
+                axis=alt.Axis(grid=True),
             ),
             color=alt.Color(
                 "series_display:N",
                 title=None,
                 scale=alt.Scale(domain=["Arrivals", "Terminal events"], range=["#4c78a8", "#e45756"]),
                 legend=alt.Legend(
-                    orient="top",
+                    orient="bottom",
                     direction="horizontal",
                     title=None,
                     labelFontSize=12,
                     symbolType="circle",
-                    padding=4,
+                    padding=8,
+                    symbolSize=80,
                 ),
             ),
             tooltip=[
@@ -1371,7 +1375,7 @@ def _period_arrivals_losses_by_day(daily: pd.DataFrame) -> None:
                 alt.Tooltip("n:Q", title="Count"),
             ],
         )
-        .properties(height=240, padding={"top": 36})
+        .properties(height=260, padding={"top": 8, "bottom": 52})
     )
     st.altair_chart(c, width="stretch")
 
