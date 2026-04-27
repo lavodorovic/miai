@@ -108,6 +108,36 @@ def generate_staffing_calendar(
     return pd.DataFrame(rows)
 
 
+def wednesday_working_headcounts(staffing: pd.DataFrame) -> pd.DataFrame:
+    """
+    One row per calendar Wednesday in ``staffing`` with count of distinct actors
+    that have availability_pct > 0 that day.
+
+    Expected columns: ``actor``, ``day``, ``availability_pct`` (long calendar like
+    ``generate_staffing_calendar`` output).
+    """
+    if staffing is None or staffing.empty:
+        return pd.DataFrame(columns=["wednesday", "n_employees"])
+    need = {"actor", "day", "availability_pct"}
+    if not need.issubset(staffing.columns):
+        raise ValueError(f"staffing missing columns {sorted(need - set(staffing.columns))}")
+    w = staffing.copy()
+    w["d"] = pd.to_datetime(w["day"], errors="coerce")
+    w = w.dropna(subset=["d"])
+    w = w[w["d"].dt.weekday == 2]
+    pct = pd.to_numeric(w["availability_pct"], errors="coerce").fillna(0)
+    w = w.loc[pct > 0]
+    if w.empty:
+        return pd.DataFrame(columns=["wednesday", "n_employees"])
+    w["wednesday"] = w["d"].dt.normalize()
+    return (
+        w.groupby("wednesday", as_index=False)
+        .agg(n_employees=("actor", "nunique"))
+        .sort_values("wednesday")
+        .reset_index(drop=True)
+    )
+
+
 def generate_team_roster(team: str, *, n_people: int = 8, domain: str = "relio.ch") -> list[str]:
     t = str(team).strip().lower()
     if t == "cr":

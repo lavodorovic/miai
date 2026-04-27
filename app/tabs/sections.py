@@ -1,6 +1,8 @@
 """Per-tab bodies (moved from app.main)."""
 from __future__ import annotations
 
+import inspect
+
 import streamlit as st
 import streamlit.components.v1 as components
 import altair as alt
@@ -24,6 +26,50 @@ from app.tabs.shared import (
     previous_date_range,
 )
 from app.tabs.viz_charts import *
+
+# Period tab — full-screen Sankey (session state + st.dialog on_dismiss when Streamlit >= 1.48)
+_PERIOD_SANKEY_FS_KEY = "period_transition_sankey_fs_open"
+_PERIOD_SANKEY_PAYLOAD_KEY = "period_transition_sankey_fs_payload"
+
+
+def _period_sankey_fs_dismiss() -> None:
+    st.session_state[_PERIOD_SANKEY_FS_KEY] = False
+
+
+def _period_sankey_modal_body() -> None:
+    st.caption("Same edge filters as on the page. Close with ×, Esc, or the button below.")
+    payload = st.session_state.get(_PERIOD_SANKEY_PAYLOAD_KEY)
+    if not payload:
+        st.warning("No Sankey payload — go back to Period and try again.")
+        return
+    edges = payload["edges"]
+    if getattr(edges, "empty", False):
+        st.info("No edges for this cohort.")
+        return
+    _transition_sankey(
+        edges,
+        stage_label=payload["stage_label"],
+        top_k=int(payload["top_k"]),
+        min_apps=int(payload["min_apps"]),
+        include_self_loops=bool(payload["include_self_loops"]),
+        compact_node_labels=False,
+        prominent=True,
+        chart_height=int(payload.get("chart_height_px", 980)),
+        chart_key="transition_sankey_echarts_fs",
+    )
+    if st.button("Close full-screen Sankey", key="period_sankey_modal_close_btn"):
+        _period_sankey_fs_dismiss()
+        st.rerun()
+
+
+_dialog_kw: dict = {"width": "large"}
+if "on_dismiss" in inspect.signature(st.dialog).parameters:
+    _dialog_kw["on_dismiss"] = _period_sankey_fs_dismiss
+
+period_transition_sankey_modal = st.dialog(
+    "Stage-to-stage flow (full screen)",
+    **_dialog_kw,
+)(_period_sankey_modal_body)
 
 
 def run_overview(*, qm: QueryManager, product_filter, date_range, min_d, max_d, product_choice: str, ui_filters: ClientFilters) -> None:
@@ -656,23 +702,20 @@ def run_period(*, qm: QueryManager, product_filter, date_range, min_d, max_d, pr
                     st.caption(
                         "Always visible by default. Full stage names appear in the mapping table under the chart."
                     )
+                    if _PERIOD_SANKEY_FS_KEY not in st.session_state:
+                        st.session_state[_PERIOD_SANKEY_FS_KEY] = False
+                    st.session_state[_PERIOD_SANKEY_PAYLOAD_KEY] = {
+                        "edges": flow_edges,
+                        "stage_label": mlab,
+                        "top_k": top_k,
+                        "min_apps": min_apps,
+                        "include_self_loops": include_self,
+                        "chart_height_px": 980,
+                    }
                     if st.button("Open Sankey full screen", key="period_sankey_open_dialog"):
-                        @st.dialog("Stage-to-stage flow (full screen)", width="large")
-                        def _period_sankey_fullscreen() -> None:
-                            st.caption("Close with × or Esc. Same filters as on the page.")
-                            _transition_sankey(
-                                flow_edges,
-                                stage_label=mlab,
-                                top_k=top_k,
-                                min_apps=min_apps,
-                                include_self_loops=include_self,
-                                compact_node_labels=False,
-                                prominent=True,
-                                chart_height="min(92vh, 1400px)",
-                                chart_key="transition_sankey_echarts_fs",
-                            )
-
-                        _period_sankey_fullscreen()
+                        st.session_state[_PERIOD_SANKEY_FS_KEY] = True
+                    if st.session_state[_PERIOD_SANKEY_FS_KEY]:
+                        period_transition_sankey_modal()
 
                     _transition_sankey(
                         flow_edges,
@@ -1339,6 +1382,36 @@ def run_capacity(*, qm: QueryManager, product_filter, date_range, min_d, max_d, 
                 cr_fte=int(cr_fte),
                 compliance_fte=int(compliance_fte),
             )
+
+            st.subheader("Employees working on Wednesdays")
+            st.caption(
+                "Mock staffing calendar (same generator as **Team → Capacity calendars**): "
+                "CR + Compliance rosters (8 each). "
+                "**Working** = availability > 0% that Wednesday."
+            )
+            _ws, _we = _date_range_days(date_range)
+            _ro_cr = generate_team_roster("CR", n_people=8)
+            _ro_co = generate_team_roster("Compliance", n_people=8)
+            _sched_wed = pd.concat(
+                [
+                    generate_staffing_calendar(
+                        actors=_ro_cr,
+                        team="CR",
+                        start_day=_ws,
+                        end_day=_we,
+                        seed=42,
+                    ),
+                    generate_staffing_calendar(
+                        actors=_ro_co,
+                        team="Compliance",
+                        start_day=_ws,
+                        end_day=_we,
+                        seed=42,
+                    ),
+                ],
+                ignore_index=True,
+            )
+            _capacity_wednesday_employee_bars(_sched_wed)
     
             delta = projected_wip - backlog_inflight
             st.caption(f"Consistency check: projected WIP − current WIP = **{delta:+.1f}** apps.")

@@ -11,6 +11,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 from streamlit_echarts5 import st_echarts
 
+from analytics.team_productivity import wednesday_working_headcounts
+
 from app.tabs.constants import LOOP_ACTIONS
 from app.tabs.shared import stage_category_color
 
@@ -47,6 +49,7 @@ __all__ = [
     "_rework_interaction_dist_chart",
     "_investigator_staged_gantt",
     "_capacity_fte_sweep_chart",
+    "_capacity_wednesday_employee_bars",
     "_bottleneck_inflow_outflow_chart",
     "_period_net_stage_delta_chart",
     "_rework_outcome_offer_rate_chart",
@@ -376,7 +379,7 @@ def _transition_sankey(
     include_self_loops: bool,
     compact_node_labels: bool,
     prominent: bool = False,
-    chart_height: str | None = None,
+    chart_height: str | int | float | None = None,
     chart_key: str = "transition_sankey_echarts",
 ) -> None:
     """
@@ -406,12 +409,24 @@ def _transition_sankey(
         "Nodes are shown as stage codes (e.g., 04, 10) to keep ribbons readable. "
         "Use the mapping table below for full stage names."
     )
+    # streamlit-echarts iframe needs explicit px heights — vh/CSS min() often collapses to 0 on Cloud.
+    px = int(max(480, min(1400, height)))
     if chart_height is not None:
-        h = chart_height
+        if isinstance(chart_height, (int, float)):
+            h = f"{int(chart_height)}px"
+        else:
+            ch = str(chart_height).strip()
+            if ch.endswith("px") or "vh" in ch:
+                h = ch
+            else:
+                try:
+                    h = f"{int(float(ch))}px"
+                except ValueError:
+                    h = ch
     elif prominent:
-        h = f"min(88vh, {int(height)}px)"
+        h = f"{max(720, min(1320, px))}px"
     else:
-        h = f"{height}px"
+        h = f"{max(560, min(1180, px))}px"
     st_echarts(
         options=options,
         height=h,
@@ -941,7 +956,8 @@ def _throughput_daily_chart(thr: pd.DataFrame) -> None:
     if thr.empty or "n_terminated" not in thr.columns:
         return
     thr = thr.copy()
-    thr["day"] = pd.to_datetime(thr["day"], utc=True, errors="coerce")
+    # DuckDB DATE / naive timestamps — avoid utc=True shifting calendar days on display.
+    thr["day"] = pd.to_datetime(thr["day"], errors="coerce")
     tline = (
         alt.Chart(thr)
         .mark_line(interpolate="monotone", strokeWidth=1.2)
@@ -1376,6 +1392,36 @@ def _capacity_fte_sweep_chart(
         st.altair_chart(c1.properties(height=220), width="stretch")
     with b:
         st.altair_chart(c2.properties(height=220), width="stretch")
+
+
+def _capacity_wednesday_employee_bars(staffing: pd.DataFrame) -> None:
+    """Count distinct roster actors with availability > 0 on each Wednesday (mock staffing calendar)."""
+    if staffing is None or staffing.empty:
+        st.caption("No staffing rows to chart.")
+        return
+    try:
+        agg = wednesday_working_headcounts(staffing)
+    except ValueError as e:
+        st.caption(str(e))
+        return
+    if agg.empty:
+        st.info("No Wednesdays in range, or nobody scheduled (availability 0%).")
+        return
+    agg["label"] = agg["wednesday"].dt.strftime("%Y-%m-%d")
+    c = (
+        alt.Chart(agg)
+        .mark_bar(color="#4c78a8")
+        .encode(
+            x=alt.X("wednesday:T", title="Wednesday (calendar date)", axis=alt.Axis(labelAngle=-45)),
+            y=alt.Y("n_employees:Q", title="Employees working", scale=alt.Scale(nice=True, zero=True)),
+            tooltip=[
+                alt.Tooltip("label:N", title="Wednesday"),
+                alt.Tooltip("n_employees:Q", title="Headcount"),
+            ],
+        )
+        .properties(height=280)
+    )
+    st.altair_chart(c, width="stretch")
 
 
 def _bottleneck_inflow_outflow_chart(radar: pd.DataFrame) -> None:

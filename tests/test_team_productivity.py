@@ -7,7 +7,22 @@ from analytics.team_productivity import (
     generate_case_risk,
     generate_staffing_calendar,
     score_transitions,
+    wednesday_working_headcounts,
 )
+
+
+def test_wednesday_working_headcounts_unique_actors() -> None:
+    assert pd.Timestamp("2026-04-08").weekday() == 2  # Wednesday
+    df = pd.DataFrame(
+        [
+            {"actor": "cr01@relio.ch", "day": "2026-04-08", "availability_pct": 100},
+            {"actor": "cr02@relio.ch", "day": "2026-04-08", "availability_pct": 50},
+            {"actor": "cr01@relio.ch", "day": "2026-04-08", "availability_pct": 0},
+        ]
+    )
+    out = wednesday_working_headcounts(df)
+    assert len(out) == 1
+    assert int(out.iloc[0]["n_employees"]) == 2
 
 
 def test_generate_case_risk_is_deterministic() -> None:
