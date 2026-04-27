@@ -28,7 +28,7 @@ from app.tabs.shared import (  # noqa: E402
 )
 
 DEFAULT_DB = PROJECT_ROOT / "data" / "relio_analytics.db"
-BUILD_TAG = "build-2026-04-27-1200"
+BUILD_TAG = "build-2026-04-27-tablabels"
 
 # Tighten layout on phones / narrow viewports (Streamlit + embedded chart iframes).
 _MOBILE_VIEWPORT_CSS = """
@@ -174,7 +174,7 @@ def main() -> None:
     )
     st.markdown(_MOBILE_VIEWPORT_CSS, unsafe_allow_html=True)
     st.title("Relio Ops Intelligence")
-    st.caption(f"UI {BUILD_TAG} · tabs: Ovw/Prd/Bnk/Rwk/Tm/SLA/Cap/Coh/Inv")
+    st.caption(f"UI {BUILD_TAG}")
 
     db_rel = st.sidebar.text_input(
         "DuckDB path (relative to project)",
@@ -244,15 +244,15 @@ def main() -> None:
 
     tab_overview, tab_period, tab_bottleneck, tab_rework, tab_team, tab_sla, tab_capacity, tab_cohort, tab_investigate = st.tabs(
         [
-            "Ovw",
-            "Prd",
-            "Bnk",
-            "Rwk",
-            "Tm",
+            "Overview",
+            "Period",
+            "Bottleneck",
+            "Rework",
+            "Team",
             "SLA",
-            "Cap",
-            "Coh",
-            "Inv",
+            "Capacity",
+            "Cohort",
+            "Investigate",
         ]
     )
 

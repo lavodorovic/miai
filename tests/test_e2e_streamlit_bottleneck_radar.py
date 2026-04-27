@@ -68,7 +68,7 @@ def test_bottleneck_radar_renders_table() -> None:
             browser = p.chromium.launch()
             page = browser.new_page()
             page.goto(base, wait_until="networkidle")
-            page.get_by_role("tab", name="Bnk").click()
+            page.get_by_role("tab", name="Bottleneck").click()
             page.wait_for_timeout(700)
 
             # Ensure we are on the Bottleneck radar tab (tab click succeeded).

@@ -85,7 +85,7 @@ def test_period_dashboard_start_snapshot_is_not_collapsed(tmp_path: Path) -> Non
             page.goto(base, wait_until="networkidle")
 
             # Ensure we are on the Period dashboard tab.
-            page.get_by_role("tab", name="Prd").click()
+            page.get_by_role("tab", name="Period").click()
             page.wait_for_timeout(500)
 
             # The metric label must be present and its value must not be "0".
