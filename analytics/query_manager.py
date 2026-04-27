@@ -6,6 +6,10 @@ Placeholders
 ``{{PRODUCT_TYPE_FILTER}}``
     ``TRUE`` when unfiltered; else ``product_type = '…'`` (escaped).
 
+``{{PRODUCT_TYPE_FILTER_A}}``
+    Same predicate on ``audit_logs AS a`` / ``v_audit_staged AS a``: ``a.product_type = '…'``.
+    Required in ``FROM audit_logs AS a JOIN v_team AS t`` (both expose ``product_type`` — unqualified binds fail).
+
 ``{{APP_ID_FILTER}}``
     ``application_id = '…'`` when an ID is provided; else ``FALSE`` (returns no rows).
     Use in drill-down queries only.
@@ -37,6 +41,7 @@ if TYPE_CHECKING:
     import duckdb
 
 FILTER_PLACEHOLDER = "{{PRODUCT_TYPE_FILTER}}"
+FILTER_PLACEHOLDER_A = "{{PRODUCT_TYPE_FILTER_A}}"
 APP_ID_PLACEHOLDER = "{{APP_ID_FILTER}}"
 DATE_RANGE_PLACEHOLDER = "{{DATE_RANGE_FILTER}}"
 PERIOD_START_PLACEHOLDER = "{{PERIOD_START_DATE}}"
@@ -66,6 +71,16 @@ def _product_type_predicate(product_type: str | None) -> str:
     return f"product_type = {_sql_string_literal(s)}"
 
 
+def _product_type_predicate_alias(alias: str, product_type: str | None) -> str:
+    """Like ``_product_type_predicate`` but qualified (join-safe with ``v_team``)."""
+    if product_type is None:
+        return "TRUE"
+    s = str(product_type).strip()
+    if not s or s == "(All)":
+        return "TRUE"
+    return f"{alias}.product_type = {_sql_string_literal(s)}"
+
+
 def _app_id_predicate(application_id: str | None) -> str:
     if application_id is None:
         return "FALSE"
@@ -86,14 +101,20 @@ def _date_range_predicate(date_range: tuple[str, str] | None) -> str:
 
 
 def _inject_product_filter(sql: str, product_type: str | None) -> str:
-    predicate = _product_type_predicate(product_type)
-    if FILTER_PLACEHOLDER in sql:
-        return sql.replace(FILTER_PLACEHOLDER, predicate)
-    warnings.warn(
-        f"SQL does not contain {FILTER_PLACEHOLDER!r}; product_type filter was not applied.",
-        stacklevel=2,
+    # Replace {{PRODUCT_TYPE_FILTER_A}} before {{PRODUCT_TYPE_FILTER}} — the latter is a prefix of the former.
+    out = sql.replace(
+        FILTER_PLACEHOLDER_A,
+        _product_type_predicate_alias("a", product_type),
     )
-    return sql
+    if FILTER_PLACEHOLDER in out:
+        return out.replace(FILTER_PLACEHOLDER, _product_type_predicate(product_type))
+    if FILTER_PLACEHOLDER not in sql and FILTER_PLACEHOLDER_A not in sql:
+        warnings.warn(
+            f"SQL does not contain {FILTER_PLACEHOLDER!r} or {FILTER_PLACEHOLDER_A!r}; "
+            "product_type filter was not applied.",
+            stacklevel=2,
+        )
+    return out
 
 
 def _inject_app_id_filter(sql: str, application_id: str | None) -> str:

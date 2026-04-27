@@ -16,11 +16,11 @@ latest AS (
     FROM audit_logs AS a
     INNER JOIN cohort AS c ON a.application_id = c.application_id
     LEFT JOIN v_team AS t
-        ON t.application_id = a.application_id
-        AND t.timestamp = a.timestamp
-        AND t.action = a.action
-        AND t.actor = a.actor
-    WHERE {{PRODUCT_TYPE_FILTER}}
+      ON t.application_id = a.application_id
+      AND t.timestamp = a.timestamp
+      AND t.action = a.action
+      AND t.actor = a.actor
+    WHERE {{PRODUCT_TYPE_FILTER_A}}
     QUALIFY ROW_NUMBER() OVER (
         PARTITION BY a.application_id
         ORDER BY a.timestamp DESC, a.action DESC

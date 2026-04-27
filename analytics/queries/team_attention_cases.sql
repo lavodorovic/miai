@@ -18,7 +18,7 @@ latest AS (
      AND t.timestamp = a.timestamp
      AND t.action = a.action
      AND t.actor = a.actor
-    WHERE {{PRODUCT_TYPE_FILTER}}
+    WHERE {{PRODUCT_TYPE_FILTER_A}}
     QUALIFY ROW_NUMBER() OVER (
         PARTITION BY a.application_id
         ORDER BY a.timestamp DESC, a.action DESC

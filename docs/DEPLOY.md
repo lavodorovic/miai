@@ -15,6 +15,8 @@ If the app is already connected to this repo, **skip the above** — only git ma
 
 **Where is the URL?** In Streamlit Cloud: workspace → your app → open the link (typically `https://*.streamlit.app`). That URL updates when the deploy finishes after each push.
 
+Example (this prototype): `https://opsintel.streamlit.app`
+
 The first boot may take a minute while it generates demo DuckDB from `RELIO_SKIP_BOOTSTRAP` logic in `app/main.py` if the DB file is missing.
 
 ## Ongoing workflow

@@ -9,7 +9,7 @@ WITH latest AS (
      AND t.timestamp = a.timestamp
      AND t.action = a.action
      AND t.actor = a.actor
-    WHERE {{PRODUCT_TYPE_FILTER}}
+    WHERE {{PRODUCT_TYPE_FILTER_A}}
     GROUP BY a.application_id
 ),
 cur AS (

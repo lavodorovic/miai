@@ -20,7 +20,7 @@ terminal_rows AS (
         AND t.timestamp = a.timestamp
         AND t.action = a.action
         AND t.actor = a.actor
-    WHERE {{PRODUCT_TYPE_FILTER}}
+    WHERE {{PRODUCT_TYPE_FILTER_A}}
       AND a.timestamp::DATE BETWEEN {{PERIOD_START_DATE}} AND {{PERIOD_END_DATE}}
       AND a.action IN (
           'MASTER_DATA_SUBMITTED',

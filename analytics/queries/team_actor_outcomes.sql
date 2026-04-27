@@ -25,7 +25,7 @@ terminal_rows AS (
         AND t.action = a.action
         AND t.actor = a.actor
     CROSS JOIN window_bounds AS w
-    WHERE {{PRODUCT_TYPE_FILTER}}
+    WHERE {{PRODUCT_TYPE_FILTER_A}}
       AND a.timestamp::DATE BETWEEN w.d30_start AND w.d_end
       AND a.action IN (
           'MASTER_DATA_SUBMITTED',
