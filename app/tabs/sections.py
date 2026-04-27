@@ -46,16 +46,14 @@ def _period_sankey_modal_body() -> None:
     if getattr(edges, "empty", False):
         st.info("No edges for this cohort.")
         return
-    _transition_sankey(
+    _transition_sankey_plotly_dialog(
         edges,
         stage_label=payload["stage_label"],
         top_k=int(payload["top_k"]),
         min_apps=int(payload["min_apps"]),
         include_self_loops=bool(payload["include_self_loops"]),
-        compact_node_labels=False,
         prominent=True,
-        chart_height=int(payload.get("chart_height_px", 980)),
-        chart_key="transition_sankey_echarts_fs",
+        chart_key="transition_sankey_plotly_fs",
     )
     if st.button("Close full-screen Sankey", key="period_sankey_modal_close_btn"):
         _period_sankey_fs_dismiss()

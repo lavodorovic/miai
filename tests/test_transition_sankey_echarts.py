@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pandas as pd
 
-from app.tabs.viz_charts import build_transition_sankey_echarts_options
+import plotly.graph_objects as go
+
+from app.tabs.viz_charts import _filtered_transition_edges, build_transition_sankey_echarts_options
 
 
 def test_build_transition_sankey_echarts_options_basic() -> None:
@@ -74,3 +76,36 @@ def test_build_transition_sankey_excludes_self_loop_when_disabled() -> None:
         compact_node_labels=True,
     )
     assert out is None
+
+
+def test_filtered_transition_edges_top_k_orders_by_weight() -> None:
+    edges = pd.DataFrame({"from_stage": [1, 2], "to_stage": [2, 3], "n_apps": [10, 100]})
+    out = _filtered_transition_edges(edges, top_k=1, min_apps=1, include_self_loops=True)
+    assert out is not None and len(out) == 1
+    assert int(out.iloc[0]["n_apps"]) == 100
+
+
+def test_plotly_sankey_trace_matches_dialog_shape() -> None:
+    """Plotly Sankey used in ``st.dialog`` must accept node customdata + link arrays."""
+    fig = go.Figure(
+        data=[
+            go.Sankey(
+                arrangement="snap",
+                node=dict(
+                    pad=14,
+                    thickness=16,
+                    label=["01", "02"],
+                    color=["#4C78A8", "#59A14F"],
+                    customdata=["Stage one", "Stage two"],
+                    hovertemplate="<b>%{customdata}</b><extra></extra>",
+                ),
+                link=dict(
+                    source=[0],
+                    target=[1],
+                    value=[42],
+                    color=["rgba(148, 163, 184, 0.42)"],
+                ),
+            )
+        ]
+    )
+    assert fig.data[0].type == "sankey"

@@ -7,6 +7,7 @@ from typing import Any
 
 import altair as alt
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 from streamlit_echarts5 import st_echarts
@@ -21,6 +22,7 @@ __all__ = [
     "_swimlane_chart",
     "_who_has_ball_chart",
     "_transition_sankey",
+    "_transition_sankey_plotly_dialog",
     "build_transition_sankey_echarts_options",
     "_transition_edge_bars",
     "_transition_heatmap",
@@ -164,6 +166,25 @@ def _compact_transition_stage_label(s: str, *, max_len: int) -> str:
     return out
 
 
+def _filtered_transition_edges(
+    edges: pd.DataFrame,
+    *,
+    top_k: int,
+    min_apps: int,
+    include_self_loops: bool,
+) -> pd.DataFrame | None:
+    """Same filtering as the ECharts Sankey (top-K edges, min weight, optional no self-loops)."""
+    if edges.empty:
+        return None
+    work = edges.copy()
+    if not include_self_loops:
+        work = work.loc[work["from_stage"] != work["to_stage"]].copy()
+    work = work.loc[work["n_apps"] >= int(min_apps)].copy()
+    if work.empty:
+        return None
+    return work.sort_values("n_apps", ascending=False).head(int(top_k)).copy()
+
+
 def build_transition_sankey_echarts_options(
     edges: pd.DataFrame,
     *,
@@ -181,17 +202,14 @@ def build_transition_sankey_echarts_options(
 
     Returns (options, height_px, stage_code_mapping) or None if no drawable graph.
     """
-    if edges.empty:
+    work = _filtered_transition_edges(
+        edges,
+        top_k=top_k,
+        min_apps=min_apps,
+        include_self_loops=include_self_loops,
+    )
+    if work is None or work.empty:
         return None
-
-    work = edges.copy()
-    if not include_self_loops:
-        work = work.loc[work["from_stage"] != work["to_stage"]].copy()
-    work = work.loc[work["n_apps"] >= int(min_apps)].copy()
-    if work.empty:
-        return None
-
-    work = work.sort_values("n_apps", ascending=False).head(int(top_k)).copy()
 
     raw_nodes = sorted({int(x) for x in set(work["from_stage"]).union(set(work["to_stage"]))})
     full_labels = [stage_label.get(int(s), f"Stage {int(s)}") for s in raw_nodes]
@@ -434,6 +452,104 @@ def _transition_sankey(
         renderer="canvas",
         key=chart_key,
     )
+    st.caption("Stage code mapping")
+    st.dataframe(pd.DataFrame(stage_map), hide_index=True, width="stretch")
+
+
+def _transition_sankey_plotly_dialog(
+    edges: pd.DataFrame,
+    *,
+    stage_label: dict[int, str],
+    top_k: int,
+    min_apps: int,
+    include_self_loops: bool,
+    prominent: bool = True,
+    chart_key: str = "transition_sankey_plotly_fs",
+) -> None:
+    """
+    Plotly Sankey for use inside ``st.dialog``. ECharts (`streamlit-echarts5`) uses a
+    nested iframe that often renders blank inside Streamlit modals on Cloud/local.
+    ``st.plotly_chart`` draws in the main Streamlit canvas and survives dialogs.
+    """
+    work = _filtered_transition_edges(
+        edges,
+        top_k=top_k,
+        min_apps=min_apps,
+        include_self_loops=include_self_loops,
+    )
+    if work is None or work.empty:
+        st.info("No stage-to-stage movement inside this window for the current cohort.")
+        return
+
+    raw_nodes = sorted({int(x) for x in set(work["from_stage"]).union(set(work["to_stage"]))})
+    full_labels = [stage_label.get(int(s), f"Stage {int(s)}") for s in raw_nodes]
+    node_keys = [f"{int(s):02d}" for s in raw_nodes]
+    stage_map = [
+        {"code": node_keys[i], "stage": full_labels[i], "short": node_keys[i]}
+        for i in range(len(raw_nodes))
+    ]
+    node_index = {int(s): i for i, s in enumerate(raw_nodes)}
+
+    palette = [
+        "#4C78A8",
+        "#59A14F",
+        "#F28E2B",
+        "#B07AA1",
+        "#76B7B2",
+        "#EDC948",
+        "#E15759",
+        "#9C755F",
+    ]
+    node_colors = [palette[i % len(palette)] for i in range(len(raw_nodes))]
+
+    sources = [node_index[int(r["from_stage"])] for _, r in work.iterrows()]
+    targets = [node_index[int(r["to_stage"])] for _, r in work.iterrows()]
+    values = [int(r["n_apps"]) for _, r in work.iterrows()]
+    link_count = len(values)
+    link_colors = ["rgba(148, 163, 184, 0.42)"] * link_count
+
+    thickness = 22 if prominent else 16
+    pad = 18 if prominent else 14
+    px_h = int(max(720, min(1320, 420 + 46 * len(raw_nodes))))
+
+    fig = go.Figure(
+        data=[
+            go.Sankey(
+                arrangement="snap",
+                valueformat=".0f",
+                node=dict(
+                    pad=pad,
+                    thickness=thickness,
+                    line=dict(color="rgba(148, 163, 184, 0.95)", width=0.55),
+                    label=node_keys,
+                    color=node_colors,
+                    customdata=full_labels,
+                    hovertemplate="<b>%{customdata}</b><br>Code %{label}<extra></extra>",
+                ),
+                link=dict(source=sources, target=targets, value=values, color=link_colors),
+            )
+        ]
+    )
+    fig.update_layout(
+        title=dict(
+            text="Where applications moved (in-period)",
+            font=dict(size=16, color="#0f172a"),
+            x=0.5,
+            xanchor="center",
+        ),
+        font=dict(family="system-ui, sans-serif", size=12, color="#334155"),
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        height=px_h,
+        margin=dict(l=24, r=24, t=56, b=24),
+        showlegend=False,
+    )
+
+    st.caption(
+        "Plotly Sankey in this dialog (ECharts stays on the Period tab). "
+        "Stage codes on the chart; full names in the table below."
+    )
+    st.plotly_chart(fig, use_container_width=True, key=chart_key)
     st.caption("Stage code mapping")
     st.dataframe(pd.DataFrame(stage_map), hide_index=True, width="stretch")
 
