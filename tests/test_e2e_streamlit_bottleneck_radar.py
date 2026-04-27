@@ -68,11 +68,11 @@ def test_bottleneck_radar_renders_table() -> None:
             browser = p.chromium.launch()
             page = browser.new_page()
             page.goto(base, wait_until="networkidle")
-            page.get_by_role("tab", name="Bottleneck radar").click()
+            page.get_by_role("tab", name="Bnk").click()
             page.wait_for_timeout(700)
 
             # Ensure we are on the Bottleneck radar tab (tab click succeeded).
-            page.get_by_role("heading", name="Bottleneck radar").wait_for(timeout=15_000)
+            page.get_by_role("heading", name="Bottleneck").first.wait_for(timeout=15_000)
             # Table container should be attached (may be inside a scrollable region in headless mode).
             page.locator('div[data-testid="stDataFrame"]').first.wait_for(state="attached", timeout=15_000)
             browser.close()

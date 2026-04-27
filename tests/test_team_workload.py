@@ -46,6 +46,14 @@ def test_team_attention_cases_are_investigable() -> None:
     assert {"application_id", "actor", "team", "days_in_stage"}.issubset(df.columns)
 
 
+def test_team_actor_outcomes_shape() -> None:
+    con = duckdb.connect(str(ROOT / "data" / "relio_analytics.db"), read_only=True)
+    qm = QueryManager(con)
+    df = qm.run("team_actor_outcomes", product_type=None, date_range=("2026-04-04", "2026-04-24"))
+    assert {"actor", "team", "n_approved", "n_rejected", "n_other_terminal"}.issubset(df.columns)
+    con.close()
+
+
 def test_team_completions_by_day_shape() -> None:
     con = duckdb.connect(str(ROOT / "data" / "relio_analytics.db"), read_only=True)
     qm = QueryManager(con)

@@ -57,8 +57,30 @@ def test_anchor_moves_last_event_into_window() -> None:
     anchored = anchor_application_timelines(df, timeline_end=end, seed=3)
     new_max = pd.to_datetime(anchored["timestamp"]).max()
     assert new_max <= end
-    assert new_max >= end - pd.Timedelta(days=14)
+    # Anchor spreads each app's last event up to 21d before timeline_end (see synthetic_generator.back_hours).
+    assert new_max >= end - pd.Timedelta(hours=21 * 24)
     assert len(anchored) == len(df)
+
+
+def test_dwell_median_by_stage_runs(tmp_path: Path) -> None:
+    df = generate_synthetic_audit_log(4, seed=11, anchor_timelines=True)
+    csv_path = tmp_path / "synthetic_logs.csv"
+    pq = tmp_path / "out.parquet"
+    write_audit_outputs(df, parquet_path=str(pq), duckdb_csv_path=str(csv_path))
+    db_path = tmp_path / "test.db"
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute("DROP TABLE IF EXISTS audit_logs;")
+        con.execute(
+            "CREATE TABLE audit_logs AS SELECT * FROM read_csv_auto(?, header = true)",
+            [str(csv_path)],
+        )
+        apply_ddl(con, ROOT)
+        qm = QueryManager(con)
+        med = qm.run("dwell_median_by_stage", product_type=None, date_range=None)
+        assert "median_dwell_hours" in med.columns
+    finally:
+        con.close()
 
 
 def test_duckdb_load_and_funnel(tmp_path: Path) -> None:

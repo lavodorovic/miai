@@ -405,7 +405,7 @@ def build_timeline(app: SyntheticApplication, start: datetime) -> list[dict[str,
     )
 
     push(
-        delta=timedelta(seconds=rng.randint(1, 5)),
+        delta=timedelta(hours=rng.randint(4, 72)),
         actor=_pick_assigned(rng, assigned_cr, CR_ROSTER),
         action="MASTER_DATA_SUBMITTED",
         description="User submitted master data to Hawk AI.",
@@ -510,7 +510,8 @@ def anchor_application_timelines(
         g = g.sort_values("timestamp")
         last_ts = g["timestamp"].iloc[-1]
         r = random.Random((seed + abs(hash(aid))) % (2**31))
-        back_hours = r.randint(0, 14 * 24)
+        # Spread application ends across the last ~3 weeks (avoid everyone landing the same hour).
+        back_hours = r.randint(8, 21 * 24)
         target_last = timeline_end - pd.Timedelta(hours=back_hours)
         delta = target_last - last_ts
         g = g.assign(timestamp=g["timestamp"] + delta)
@@ -592,9 +593,12 @@ def apply_carryover_history_for_period_dashboard(
 
         gap = pd.Timedelta(hours=2 + r.randint(0, 24))
         new_first = max(pre["timestamp"].iloc[-1] + gap, timeline_end - pd.Timedelta(days=18))
-        new_last = timeline_end - pd.Timedelta(hours=r.randint(6, min(320, 14 * 24)))
+        new_last = timeline_end - pd.Timedelta(
+            days=r.randint(0, 12),
+            hours=r.randint(2, 22),
+        )
         if new_last <= new_first:
-            new_last = new_first + pd.Timedelta(days=3)
+            new_last = new_first + pd.Timedelta(days=5)
 
         nsuf = len(suf)
         if nsuf == 1:
@@ -645,7 +649,7 @@ def generate_synthetic_audit_log(
     all_rows: list[dict[str, Any]] = []
     heroes = _hero_applications(seed)
     for idx, app in enumerate(heroes[: max(0, min(len(heroes), n_applications))]):
-        t0 = start_base + timedelta(days=idx * 3, hours=9)
+        t0 = start_base + timedelta(days=idx * 4 + app.rng.randint(0, 2), hours=9 + app.rng.randint(0, 5))
         all_rows.extend(build_timeline(app, t0))
 
     for i in range(max(0, n_applications - len(heroes))):

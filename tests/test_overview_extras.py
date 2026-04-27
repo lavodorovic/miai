@@ -83,6 +83,14 @@ def test_kpi_inflight_stale_24h_runs() -> None:
     assert int(df.iloc[0]["n_stale_24h"]) >= 0
 
 
+def test_sla_breached_applications_runs() -> None:
+    con = _connect()
+    qm = QueryManager(con)
+    df = qm.run("sla_breached_applications", product_type=None, date_range=("2026-04-04", "2026-04-24"))
+    assert set(df.columns) >= {"application_id", "sla_area", "hours_since_last_event"}
+    con.close()
+
+
 def test_sla_breach_overview_has_only_expected_statuses() -> None:
     con = _connect()
     qm = QueryManager(con)

@@ -73,6 +73,7 @@ def test_no_carryover_can_collapse_start(tmp_path: Path) -> None:
         )
         # Without carryover rewriting, anchoring tends to push most histories into the window,
         # but a small number of apps can still have prior rows depending on randomness.
-        assert step0 / max(1, cohort) >= 0.90
+        # Synthetic timelines spread terminal timestamps more (demo charts); expect slightly more carry-in.
+        assert step0 / max(1, cohort) >= 0.80
     finally:
         con.close()

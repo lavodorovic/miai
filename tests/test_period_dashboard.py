@@ -81,6 +81,14 @@ def test_load_period_dashboard_runs(period_db: duckdb.DuckDBPyConnection) -> Non
     assert pd_data.n_losses >= 0
 
 
+def test_period_movers_by_product(period_db: duckdb.DuckDBPyConnection) -> None:
+    qm = QueryManager(period_db)
+    dr = ("2026-04-01", "2026-04-30")
+    df = qm.run("period_movers_by_product", product_type=None, date_range=dr)
+    assert set(df.columns) >= {"product_type", "n_movers"}
+    assert int(df["n_movers"].sum()) >= 0
+
+
 def test_period_arrivals_losses_by_day(period_db: duckdb.DuckDBPyConnection) -> None:
     qm = QueryManager(period_db)
     dr = ("2026-04-01", "2026-04-30")

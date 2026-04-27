@@ -92,8 +92,9 @@ LEGENDS: dict[str, dict[str, str]] = {
     "period_arrivals_losses": {
         "subtitle": (
             "Arrivals: per application · During window — first product-filtered audit day in [start,end]. "
-            "Losses: per application · During window — any terminal outcome row in [start,end] "
-            "(same terminal set as §5 in-flight exclusion)."
+            "Red series is “terminal events” per day (distinct apps with any terminal action that day), "
+            "including successful MASTER_DATA_SUBMITTED as well as reject / cancel / offer refused — "
+            "same terminal set as §5 in-flight exclusion, not “churn only”."
         ),
     },
     "period_transition_matrix": {

@@ -11,6 +11,10 @@ This app is wired for **[Streamlit Community Cloud](https://share.streamlit.io/)
 5. **Python version:** 3.11 (or match `.github/workflows/ci.yml`).
 6. Deploy. Cloud installs dependencies from **`requirements.txt`** only (fast; no Playwright).
 
+If the app is already connected to this repo, **skip the above** — only git matters from here.
+
+**Where is the URL?** In Streamlit Cloud: workspace → your app → open the link (typically `https://*.streamlit.app`). That URL updates when the deploy finishes after each push.
+
 The first boot may take a minute while it generates demo DuckDB from `RELIO_SKIP_BOOTSTRAP` logic in `app/main.py` if the DB file is missing.
 
 ## Ongoing workflow
