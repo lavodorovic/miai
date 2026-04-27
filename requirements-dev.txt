@@ -1,0 +1,4 @@
+# Local development & CI (tests, browser e2e). Cloud deploy uses requirements.txt only.
+-r requirements.txt
+pytest>=8.0.0
+playwright>=1.44.0

@@ -38,7 +38,7 @@ What this covers:
 One-time setup:
 
 ```bash
-python3 -m pip install -r requirements.txt
+python3 -m pip install -r requirements-dev.txt
 python3 -m playwright install chromium
 ```
 

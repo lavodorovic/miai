@@ -23,7 +23,7 @@ Period dashboard start snapshot is not collapsed.
 One-time setup:
 
 ```bash
-python3 -m pip install -r requirements.txt
+python3 -m pip install -r requirements-dev.txt
 python3 -m playwright install chromium
 ```
 
@@ -61,6 +61,10 @@ Stable App investigator IDs:
 - `demo-hero-stuck-compliance` — enhanced due diligence/compliance stall.
 - `demo-hero-offer-refused` — offer refusal terminal path.
 - `demo-hero-rejected` — rejected after compliance review.
+
+## Public prototype URL (auto from git push)
+
+See **`docs/DEPLOY.md`** — Streamlit Community Cloud redeploys when you push to the linked branch.
 
 ## Nightly (optional)
 
