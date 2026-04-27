@@ -16,7 +16,7 @@ prior AS (
         a.timestamp AS last_event_at
     FROM v_audit_staged AS a
     INNER JOIN cohort AS c ON a.application_id = c.application_id
-    WHERE {{PRODUCT_TYPE_FILTER}}
+    WHERE {{PRODUCT_TYPE_FILTER_A}}
       AND a.timestamp::DATE < {{PERIOD_START_DATE}}
     QUALIFY ROW_NUMBER() OVER (
         PARTITION BY a.application_id

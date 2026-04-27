@@ -884,6 +884,8 @@ def _overview_sla_stacked_bars(sla: pd.DataFrame) -> None:
     for s in work["_area_lbl"].unique():
         if s not in sort_lbl:
             sort_lbl.append(str(s))
+    if not sort_lbl:
+        sort_lbl = list(dict.fromkeys(work["_area_lbl"].astype(str).tolist()))
 
     n_areas = max(1, int(work["sla_area"].nunique()))
     # Horizontal stacked bars: categories on Y → area names are always horizontal text.

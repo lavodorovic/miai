@@ -13,7 +13,7 @@ latest AS (
         a.actor AS latest_actor
     FROM v_audit_staged AS a
     INNER JOIN cohort AS c ON a.application_id = c.application_id
-    WHERE {{PRODUCT_TYPE_FILTER}}
+    WHERE {{PRODUCT_TYPE_FILTER_A}}
     QUALIFY ROW_NUMBER() OVER (
         PARTITION BY a.application_id
         ORDER BY a.timestamp DESC, a.action DESC

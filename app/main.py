@@ -28,7 +28,7 @@ from app.tabs.shared import (  # noqa: E402
 )
 
 DEFAULT_DB = PROJECT_ROOT / "data" / "relio_analytics.db"
-BUILD_TAG = "build-2026-04-27-1130"
+BUILD_TAG = "build-2026-04-27-1200"
 
 # Tighten layout on phones / narrow viewports (Streamlit + embedded chart iframes).
 _MOBILE_VIEWPORT_CSS = """

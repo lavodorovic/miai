@@ -21,7 +21,7 @@ latest AS (
         a.action AS action
     FROM v_audit_staged AS a
     INNER JOIN cohort AS c ON a.application_id = c.application_id
-    WHERE {{PRODUCT_TYPE_FILTER}}
+    WHERE {{PRODUCT_TYPE_FILTER_A}}
     QUALIFY ROW_NUMBER() OVER (
         PARTITION BY a.application_id
         ORDER BY a.timestamp DESC, a.action DESC
@@ -54,8 +54,7 @@ tr AS (
     FROM v_transitions AS t
     INNER JOIN cohort AS c ON t.application_id = c.application_id
     CROSS JOIN last7 AS w
-    WHERE {{PRODUCT_TYPE_FILTER}}
-      AND t.transition_at::DATE BETWEEN w.d0 AND w.d1
+    WHERE t.transition_at::DATE BETWEEN w.d0 AND w.d1
 ),
 flow AS (
     SELECT
