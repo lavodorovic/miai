@@ -43,7 +43,8 @@ LEGENDS: dict[str, dict[str, str]] = {
     "overview_performance_weekly": {
         "subtitle": (
             "Business Account only · Distinct applications per ISO week · New applications = APPLICATION_STARTED; "
-            "terminal stage = any terminal action; new customers = MASTER_DATA_SUBMITTED · Weekly buckets from audit timestamps."
+            "total cases done = any terminal action (master data submitted, rejected, cancelled, offer refused); "
+            "new customers = MASTER_DATA_SUBMITTED only · Weekly buckets from audit timestamps."
         ),
     },
     "funnel_latest_stage": {

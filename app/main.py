@@ -24,10 +24,10 @@ from app.tabs import sections  # noqa: E402
 from app.tabs.shared import render_sidebar_client_filters  # noqa: E402
 
 DEFAULT_DB = PROJECT_ROOT / "data" / "relio_analytics.db"
-BUILD_TAG = "build-2026-05-05-ba-growth-curve"
+BUILD_TAG = "build-2026-05-05-ba-mixed-scenarios"
 # Bump when the synthetic pipeline (synthetic_generator.py / queries) changes the SHAPE of
 # the demo dataset. Cloud caches data/relio_analytics.db across reruns; mismatch forces regen.
-DATA_TAG = "data-2026-05-05-ba-growth-curve-v3"
+DATA_TAG = "data-2026-05-05-ba-mixed-scenarios-v4"
 
 # Overview: hide sidebar panel (collapsed-style); other pages show full sidebar + filters.
 _OVERVIEW_COLLAPSE_SIDEBAR_CSS = """

@@ -1089,7 +1089,7 @@ def _overview_performance_weekly_chart(perf: pd.DataFrame) -> None:
     )
     labels = {
         "n_new_applications": "New applications",
-        "n_terminal_phase": "Terminal stage",
+        "n_terminal_phase": "Total cases done",
         "n_accounts_opened": "New customers",
     }
     long["series"] = long["series"].astype(str).map(labels)

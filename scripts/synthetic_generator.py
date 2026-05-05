@@ -9,6 +9,7 @@ Grounded in:
 from __future__ import annotations
 
 import json
+import math
 import random
 import sys
 import uuid
@@ -622,14 +623,14 @@ def _ba_weekly_chart_counts(work: pd.DataFrame) -> pd.DataFrame:
 def _ba_weekly_target_curve(
     weeks: list[pd.Timestamp],
 ) -> dict[pd.Timestamp, tuple[int, int, int]]:
-    """Smooth growth-curve targets per ISO week for BA performance chart.
+    """Per-week targets for the BA performance chart.
 
-    Replaces the flat-floor look with an organic ramp:
-      - new applications: ~30 → ~120 (concave growth, plateaus in last weeks
-        so injection — which adds to all three series — does not push terminal/
-        customer counts massively above their natural anchored values)
-      - terminal stage:   ~25 → ~120 (lags new apps by ~1 week)
-      - new customers:    ~20 → ~95 (lags terminal by ~1 week)
+    Invariants:
+      - new applications      always > new customers
+      - total cases done      always > new customers
+      - new applications      crosses above/below total cases done across the period
+                              (driven by independently-phased wiggles)
+      - wiggle amplitude      strongest in the middle of the period, vanishes at edges
 
     Floors (25 / 20 / 4) are still respected as hard minimums.
     """
@@ -639,22 +640,136 @@ def _ba_weekly_target_curve(
     out: dict[pd.Timestamp, tuple[int, int, int]] = {}
     for i, w in enumerate(weeks):
         p = i / max(n - 1, 1)
-        # Plateau new_apps target in the final ~25% of weeks. Otherwise injection
-        # (which is success_full and contributes to all three series) inflates the
-        # terminal/customer lines well above the anchored growth.
-        p_new = min(p, 0.78)
-        n_new = 30 + 100 * (p_new ** 1.20)
 
-        p_t = max(0.0, (p - 0.06) / 0.94)
-        n_term = 25 + 100 * (p_t ** 1.30)
+        n_new_base = 40 + 105 * (p ** 1.20)
+        n_term_base = 32 + 95 * (p ** 1.30)
+        n_cust_base = 22 + 55 * (p ** 1.45)
 
-        p_c = max(0.0, (p - 0.12) / 0.88)
-        n_cust = 20 + 80 * (p_c ** 1.40)
+        # Mid-emphasis envelope: 1 at p=0.5, 0 at edges.
+        mid_emphasis = math.sin(math.pi * p) ** 1.4
+
+        # Independent oscillations per series: different frequencies + phases so the
+        # three lines drift apart and cross each other naturally.
+        new_wiggle = (
+            math.sin(i * 1.30 + 0.4) * 26
+            + math.sin(i * 0.65 + 1.7) * 14
+        ) * mid_emphasis
+        term_wiggle = (
+            math.sin(i * 1.55 + 2.3) * 30
+            + math.sin(i * 0.55 + 0.2) * 12
+        ) * mid_emphasis
+        cust_wiggle = math.sin(i * 0.95 + 1.1) * 9 * mid_emphasis
+
+        n_new = n_new_base + new_wiggle
+        n_term = n_term_base + term_wiggle
+        n_cust = n_cust_base + cust_wiggle
+
+        # Plateau the curves in the very last 18% of weeks: the linear-ramp
+        # anchoring already piles a lot of raw terminals there, and we don't
+        # want injection to multiply that into a runaway spike.
+        if p > 0.82:
+            plateau_p = 0.82
+            cap_new = 40 + 105 * (plateau_p ** 1.20) + 12
+            cap_term = 32 + 95 * (plateau_p ** 1.30) + 18
+            cap_cust = 22 + 55 * (plateau_p ** 1.45) + 6
+            n_new = min(n_new, cap_new)
+            n_term = min(n_term, cap_term)
+            n_cust = min(n_cust, cap_cust)
 
         n_new_i = max(int(round(n_new)), BA_WEEK_MIN_NEW_APPS)
         n_term_i = max(int(round(n_term)), BA_WEEK_MIN_TERMINAL)
         n_cust_i = max(int(round(n_cust)), BA_WEEK_MIN_CUSTOMERS)
+
+        # Hard invariants the chart depends on:
+        if n_term_i <= n_cust_i:
+            n_term_i = n_cust_i + 6
+        if n_new_i <= n_cust_i:
+            n_new_i = n_cust_i + 8
+
         out[pd.Timestamp(w).normalize()] = (n_new_i, n_term_i, n_cust_i)
+    return out
+
+
+_NON_CUSTOMER_TERMINAL_SCENARIOS = ("rejected", "cancelled_mid", "offer_refused")
+
+
+def _build_synth_ba_app(
+    *,
+    aid: str,
+    scenario: str,
+    rng: random.Random,
+    synth_i: int,
+) -> SyntheticApplication:
+    return SyntheticApplication(
+        application_id=aid,
+        customer_email=f"{aid}@floor.example.com",
+        signatory_email=None,
+        company_name=f"FloorCo {synth_i}",
+        company_uid=_che_uid(rng),
+        assigned_cr=CR_ROSTER[synth_i % len(CR_ROSTER)],
+        assigned_compliance=COMPLIANCE_ROSTER[synth_i % len(COMPLIANCE_ROSTER)],
+        product_type=BA_PRODUCT,
+        scenario=scenario,
+        interaction_rounds=1,
+        rng=random.Random(rng.randint(0, 2**31 - 1)),
+    )
+
+
+def _spread_inflight_timeline_fresh(
+    rows: list[dict[str, Any]],
+    week_start: pd.Timestamp,
+    timeline_end: pd.Timestamp,
+    rng: random.Random,
+) -> list[dict[str, Any]]:
+    """Spread a stalled timeline so APPLICATION_STARTED lands in ``week_start``
+    (so the BA chart counts it there) and the last event is within 48h of
+    ``timeline_end`` (so the app is **fresh** in-flight, not stuck)."""
+    rows = sorted(rows, key=lambda r: r["timestamp"])
+    ws = pd.Timestamp(week_start).normalize()
+    te = pd.Timestamp(timeline_end)
+    if te.tzinfo is not None:
+        te = te.tz_localize(None)
+    first_ts = ws + pd.Timedelta(hours=rng.randint(6, 30))
+    last_ts = te - pd.Timedelta(hours=rng.randint(8, 44))
+    if last_ts <= first_ts + pd.Timedelta(hours=2):
+        return _compress_inflight_timeline_stuck(rows, week_start, timeline_end, rng)
+    span_s = (last_ts - first_ts).total_seconds()
+    n = len(rows)
+    out: list[dict[str, Any]] = []
+    for i, r in enumerate(rows):
+        frac = i / max(n - 1, 1)
+        ts = first_ts + pd.Timedelta(seconds=frac * span_s)
+        out.append({**r, "timestamp": ts})
+    return out
+
+
+def _compress_inflight_timeline_stuck(
+    rows: list[dict[str, Any]],
+    week_start: pd.Timestamp,
+    timeline_end: pd.Timestamp,
+    rng: random.Random,
+) -> list[dict[str, Any]]:
+    """Compress a stalled timeline into ``week_start``'s ISO week, but force the
+    last event to land at least 72h before ``timeline_end`` so the app is
+    counted as **stuck** in the in-flight stuck-share calculation, even when
+    the assigned week is the very last week of the period."""
+    rows = sorted(rows, key=lambda r: r["timestamp"])
+    ws = pd.Timestamp(week_start).normalize()
+    te = pd.Timestamp(timeline_end)
+    if te.tzinfo is not None:
+        te = te.tz_localize(None)
+    we = ws + pd.Timedelta(days=7) - pd.Timedelta(seconds=1)
+    cutoff = te - pd.Timedelta(hours=rng.randint(72, 144))
+    we_stuck = min(we, cutoff)
+    if we_stuck <= ws:
+        we_stuck = ws + pd.Timedelta(hours=12)
+    span_s = max((we_stuck - ws).total_seconds(), 60.0)
+    n = len(rows)
+    out: list[dict[str, Any]] = []
+    for i, r in enumerate(rows):
+        frac = (i / (n - 1)) if n > 1 else 0.5
+        ts = ws + pd.Timedelta(seconds=frac * span_s * 0.995)
+        out.append({**r, "timestamp": ts})
     return out
 
 
@@ -664,10 +779,24 @@ def inject_ba_weekly_floors(
     seed: int,
     timeline_end: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
-    """Hit per-week BA performance targets (growth curve, not a flat floor).
+    """Hit per-week BA performance targets without inflating the in-flight KPI.
 
-    Each injected synthetic app is a ``success_full`` Business Account customer, so it adds
-    +1 to APPLICATION_STARTED, +1 to terminal stage, and +1 to new customers in that week.
+    Two injection scenario classes are used so other dashboards stay realistic:
+      - ``success_full``                 → +1 new app, +1 total done, +1 new customer
+      - ``rejected`` / ``cancelled_mid`` /
+        ``offer_refused``                → +1 new app, +1 total done, +0 customer
+
+    No in-flight scenarios are injected here (that would inflate the "In-flight"
+    KPI). Instead, when a week needs more new applications than success_full +
+    non-customer terminals can provide, we inject extra non-customer terminals,
+    accepting that ``total cases done`` will overshoot its target — visually
+    that's the desired effect (done line briefly leads new line in those weeks).
+
+    Allocation per week:
+      - n_succ        = max(0, target_cust - raw_cust)
+      - n_term_only   = max(0, target_term - raw_term - n_succ)
+      - if final new ≤ final customers + 7, top up n_term_only so
+        new > customers always (user invariant).
     """
     rng = random.Random(seed + 61_000)
     work = df.copy()
@@ -683,29 +812,34 @@ def inject_ba_weekly_floors(
             t_new, t_term, t_cust = targets.get(
                 ws, (BA_WEEK_MIN_NEW_APPS, BA_WEEK_MIN_TERMINAL, BA_WEEK_MIN_CUSTOMERS)
             )
-            need = max(
-                0,
-                t_new - int(row["n_new_applications"]),
-                t_term - int(row["n_terminal_phase"]),
-                t_cust - int(row["n_accounts_opened"]),
-            )
-            if need <= 0:
+            r_new = int(row["n_new_applications"])
+            r_term = int(row["n_terminal_phase"])
+            r_cust = int(row["n_accounts_opened"])
+
+            n_succ = max(0, t_cust - r_cust)
+            n_term_only = max(0, t_term - r_term - n_succ)
+
+            final_cust = r_cust + n_succ
+            final_new = r_new + n_succ + n_term_only
+            if final_new <= final_cust + 7:
+                top_up = (final_cust + 8) - final_new
+                n_term_only += top_up
+
+            inject_plan: list[str] = []
+            inject_plan.extend(["success_full"] * n_succ)
+            for k in range(n_term_only):
+                inject_plan.append(
+                    _NON_CUSTOMER_TERMINAL_SCENARIOS[(synth_i + k) % len(_NON_CUSTOMER_TERMINAL_SCENARIOS)]
+                )
+
+            if not inject_plan:
                 continue
-            for _ in range(need):
+
+            for scenario in inject_plan:
                 aid = f"synth-ba-{ws.strftime('%Y%m%d')}-{synth_i}"
                 synth_i += 1
-                app = SyntheticApplication(
-                    application_id=aid,
-                    customer_email=f"{aid}@floor.example.com",
-                    signatory_email=None,
-                    company_name=f"FloorCo {synth_i}",
-                    company_uid=_che_uid(rng),
-                    assigned_cr=CR_ROSTER[synth_i % len(CR_ROSTER)],
-                    assigned_compliance=COMPLIANCE_ROSTER[synth_i % len(COMPLIANCE_ROSTER)],
-                    product_type=BA_PRODUCT,
-                    scenario="success_full",
-                    interaction_rounds=1,
-                    rng=random.Random(rng.randint(0, 2**31 - 1)),
+                app = _build_synth_ba_app(
+                    aid=aid, scenario=scenario, rng=rng, synth_i=synth_i
                 )
                 t0 = datetime(ws.year, ws.month, ws.day, rng.randint(6, 20), rng.randint(0, 59))
                 raw_rows = build_timeline(app, t0)
