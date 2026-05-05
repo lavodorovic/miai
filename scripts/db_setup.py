@@ -86,6 +86,16 @@ def main() -> None:
     finally:
         con.close()
 
+    # Mirror app/main.py bootstrap stamp so Cloud rebuilds when synth pipeline changes.
+    try:
+        sys.path.insert(0, str((root / "app").resolve()))
+        from app.main import DATA_TAG  # type: ignore[import-not-found]
+
+        (db_path.parent / ".bootstrap_tag").write_text(DATA_TAG, encoding="utf-8")
+        print(f"Stamped bootstrap tag: {DATA_TAG}")
+    except Exception as e:  # noqa: BLE001
+        print(f"(skipped bootstrap tag stamp: {e})")
+
 
 if __name__ == "__main__":
     main()

@@ -556,90 +556,108 @@ def _compress_timeline_into_week(
     rows: list[dict[str, Any]],
     week_start: pd.Timestamp,
     rng: random.Random,
+    *,
+    timeline_end: pd.Timestamp | None = None,
 ) -> list[dict[str, Any]]:
+    """Spread events monotonically inside [week_start, week_end] so ISO week buckets match the chart."""
     rows = sorted(rows, key=lambda r: r["timestamp"])
-    t0 = pd.Timestamp(rows[0]["timestamp"])
-    t1 = pd.Timestamp(rows[-1]["timestamp"])
-    span_s = max((t1 - t0).total_seconds(), 1.0)
-    week_end = week_start + pd.Timedelta(days=7) - pd.Timedelta(seconds=1)
-    slot_s = float(min(max(8 * 3600, span_s), 6 * 86400 + rng.randint(0, 7200)))
-    w0 = week_start + pd.Timedelta(hours=rng.randint(2, 36))
-    if w0 + pd.Timedelta(seconds=slot_s) > week_end:
-        w0 = week_start + pd.Timedelta(hours=rng.randint(1, 12))
+    ws = pd.Timestamp(week_start).normalize()
+    we = ws + pd.Timedelta(days=7) - pd.Timedelta(seconds=1)
+    if timeline_end is not None:
+        te = pd.Timestamp(timeline_end)
+        if te.tzinfo is not None:
+            te = te.tz_localize(None)
+        we = min(we, te)
+    if we <= ws:
+        we = ws + pd.Timedelta(minutes=90)
+    span_s = max((we - ws).total_seconds(), 60.0)
+    n = len(rows)
     out: list[dict[str, Any]] = []
-    for r in rows:
-        frac = (pd.Timestamp(r["timestamp"]) - t0).total_seconds() / span_s
-        ts = w0 + pd.Timedelta(seconds=frac * slot_s)
-        if ts < week_start:
-            ts = week_start + pd.Timedelta(minutes=rng.randint(1, 120))
-        if ts > week_end:
-            ts = week_end - pd.Timedelta(minutes=rng.randint(1, 180))
+    for i, r in enumerate(rows):
+        frac = (i / (n - 1)) if n > 1 else 0.5
+        ts = ws + pd.Timedelta(seconds=frac * span_s * 0.995)
         out.append({**r, "timestamp": ts})
     return out
 
 
-def inject_ba_weekly_floors(df: pd.DataFrame, *, timeline_end: pd.Timestamp, seed: int) -> pd.DataFrame:
-    """Ensure Business Account weekly minima for demo charts (distinct apps per ISO week)."""
+def _ba_weekly_chart_counts(work: pd.DataFrame) -> pd.DataFrame:
+    """Same BA × week grain as ``overview_performance_weekly.sql`` (full audit date span)."""
+    import duckdb as _duckdb
+
+    terms = ", ".join(f"'{x}'" for x in sorted(_TERMINAL_ACTIONS))
+    con = _duckdb.connect(":memory:")
+    con.register("audit_logs", work)
+    df = con.sql(
+        f"""
+        SELECT
+            date_trunc('week', timestamp)::DATE AS week_start,
+            COUNT(DISTINCT CASE WHEN action = 'APPLICATION_STARTED' THEN application_id END)::BIGINT AS n_new_applications,
+            COUNT(DISTINCT CASE WHEN action IN ({terms}) THEN application_id END)::BIGINT AS n_terminal_phase,
+            COUNT(DISTINCT CASE WHEN action = 'MASTER_DATA_SUBMITTED' THEN application_id END)::BIGINT AS n_accounts_opened
+        FROM audit_logs
+        WHERE product_type = '{BA_PRODUCT}'
+        GROUP BY 1
+        ORDER BY 1
+        """
+    ).df()
+    con.close()
+    return df
+
+
+def inject_ba_weekly_floors(
+    df: pd.DataFrame,
+    *,
+    seed: int,
+    timeline_end: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """Ensure Business Account weekly minima vs the same SQL buckets as the Overview chart."""
     rng = random.Random(seed + 61_000)
-    ref = pd.Timestamp(timeline_end)
-    if ref.tzinfo is not None:
-        ref = ref.tz_localize(None)
     work = df.copy()
     work["timestamp"] = pd.to_datetime(work["timestamp"])
-    ts_max = work["timestamp"].max()
-    ts_min = work["timestamp"].min()
-    start = pd.Timestamp(ts_min).normalize()
-    start = start - pd.Timedelta(days=int(start.weekday()))
-    extra: list[dict[str, Any]] = []
     synth_i = 0
-    for ws in pd.date_range(start=start, end=ts_max + pd.Timedelta(days=8), freq="W-MON"):
-        ws = pd.Timestamp(ws).normalize()
-        band = (work["timestamp"] >= ws) & (work["timestamp"] < ws + pd.Timedelta(days=7))
-        ba = work["product_type"].astype(str) == BA_PRODUCT
-
-        n_new = work.loc[ba & band & (work["action"].astype(str) == "APPLICATION_STARTED"), "application_id"].nunique()
-        n_term = work.loc[
-            ba & band & work["action"].astype(str).isin(_TERMINAL_ACTIONS),
-            "application_id",
-        ].nunique()
-        n_cust = work.loc[
-            ba & band & (work["action"].astype(str) == "MASTER_DATA_SUBMITTED"),
-            "application_id",
-        ].nunique()
-
-        need = max(
-            0,
-            BA_WEEK_MIN_NEW_APPS - int(n_new),
-            BA_WEEK_MIN_TERMINAL - int(n_term),
-            BA_WEEK_MIN_CUSTOMERS - int(n_cust),
-        )
-
-        for _ in range(need):
-            aid = f"synth-ba-{ws.strftime('%Y%m%d')}-{synth_i}"
-            synth_i += 1
-            app = SyntheticApplication(
-                application_id=aid,
-                customer_email=f"{aid}@floor.example.com",
-                signatory_email=None,
-                company_name=f"FloorCo {synth_i}",
-                company_uid=_che_uid(rng),
-                assigned_cr=CR_ROSTER[synth_i % len(CR_ROSTER)],
-                assigned_compliance=COMPLIANCE_ROSTER[synth_i % len(COMPLIANCE_ROSTER)],
-                product_type=BA_PRODUCT,
-                scenario="success_full",
-                interaction_rounds=1,
-                rng=random.Random(rng.randint(0, 2**31 - 1)),
+    for _pass in range(35):
+        perf = _ba_weekly_chart_counts(work)
+        total_need = 0
+        chunk_all: list[dict[str, Any]] = []
+        for _, row in perf.iterrows():
+            ws = pd.Timestamp(row["week_start"]).normalize()
+            need = max(
+                0,
+                BA_WEEK_MIN_NEW_APPS - int(row["n_new_applications"]),
+                BA_WEEK_MIN_TERMINAL - int(row["n_terminal_phase"]),
+                BA_WEEK_MIN_CUSTOMERS - int(row["n_accounts_opened"]),
             )
-            t0 = datetime(ws.year, ws.month, ws.day, rng.randint(6, 20), rng.randint(0, 59))
-            raw_rows = build_timeline(app, t0)
-            extra.extend(_compress_timeline_into_week(raw_rows, ws, rng))
+            if need <= 0:
+                continue
+            need += 6
+            total_need += need
+            for _ in range(need):
+                aid = f"synth-ba-{ws.strftime('%Y%m%d')}-{synth_i}"
+                synth_i += 1
+                app = SyntheticApplication(
+                    application_id=aid,
+                    customer_email=f"{aid}@floor.example.com",
+                    signatory_email=None,
+                    company_name=f"FloorCo {synth_i}",
+                    company_uid=_che_uid(rng),
+                    assigned_cr=CR_ROSTER[synth_i % len(CR_ROSTER)],
+                    assigned_compliance=COMPLIANCE_ROSTER[synth_i % len(COMPLIANCE_ROSTER)],
+                    product_type=BA_PRODUCT,
+                    scenario="success_full",
+                    interaction_rounds=1,
+                    rng=random.Random(rng.randint(0, 2**31 - 1)),
+                )
+                t0 = datetime(ws.year, ws.month, ws.day, rng.randint(6, 20), rng.randint(0, 59))
+                raw_rows = build_timeline(app, t0)
+                chunk_all.extend(
+                    _compress_timeline_into_week(raw_rows, ws, rng, timeline_end=timeline_end)
+                )
 
-    if not extra:
-        return work
-    add_df = audit_frame(extra)
-    return pd.concat([work, add_df], ignore_index=True).sort_values(
-        ["application_id", "timestamp"]
-    ).reset_index(drop=True)
+        if not chunk_all:
+            break
+        work = pd.concat([work, audit_frame(chunk_all)], ignore_index=True)
+
+    return work.sort_values(["application_id", "timestamp"]).reset_index(drop=True)
 
 
 def enforce_cr_breach_ratio_vs_compliance(
@@ -650,7 +668,7 @@ def enforce_cr_breach_ratio_vs_compliance(
     seed: int,
     ratio: float = 0.10,
 ) -> pd.DataFrame:
-    """Reduce CR SLA breaches until count ≈ ratio × Compliance breaches (dataset as-of)."""
+    """Match CR-review breached count ≈ ratio × Compliance breached (± rounding)."""
     import duckdb
 
     rr = str(repo_root.resolve())
@@ -667,7 +685,7 @@ def enforce_cr_breach_ratio_vs_compliance(
     work = df.copy()
     work["timestamp"] = pd.to_datetime(work["timestamp"])
 
-    for _ in range(120):
+    for _ in range(200):
         con = duckdb.connect(":memory:")
         con.register("audit_logs_df", work)
         con.execute("CREATE TABLE audit_logs AS SELECT * FROM audit_logs_df")
@@ -676,27 +694,47 @@ def enforce_cr_breach_ratio_vs_compliance(
         sql = qm.load_sql("sla_breached_applications")
         sql = sql.replace("\nLIMIT 200", "").replace("LIMIT 200;", "").replace("LIMIT 200", "")
         br = qm.run_sql(sql, product_type=None, date_range=None)
-        con.close()
 
         if br.empty:
+            con.close()
             break
-        cr = br.loc[br["sla_area"].astype(str) == "CR review", "application_id"].astype(str).tolist()
-        comp = br.loc[br["sla_area"].astype(str) == "Compliance", "application_id"].astype(str).tolist()
-        n_c = len(comp)
+
+        cr_df = br.loc[br["sla_area"].astype(str) == "CR review"]
+        co_df = br.loc[br["sla_area"].astype(str) == "Compliance"]
+        n_cr = len(cr_df)
+        n_c = len(co_df)
         target = int(round(ratio * n_c)) if n_c > 0 else 0
-        excess = len(cr) - target
-        if excess <= 0:
-            break
-        rng.shuffle(cr)
-        for aid in cr[:excess]:
-            mask = work["application_id"].astype(str) == aid
-            if not mask.any():
-                continue
-            g = work.loc[mask].sort_values("timestamp")
-            last_ts = pd.Timestamp(g.iloc[-1]["timestamp"])
-            tgt = ref - pd.Timedelta(hours=rng.randint(6, 22))
-            delta = tgt - last_ts
-            work.loc[mask, "timestamp"] = work.loc[mask, "timestamp"] + delta
+        excess = n_cr - target
+
+        if excess > 0:
+            ids = cr_df["application_id"].astype(str).tolist()
+            rng.shuffle(ids)
+            for aid in ids[:excess]:
+                mask = work["application_id"].astype(str) == aid
+                if not mask.any():
+                    continue
+                g = work.loc[mask].sort_values("timestamp")
+                last_ts = pd.Timestamp(g.iloc[-1]["timestamp"])
+                tgt = ref - pd.Timedelta(hours=rng.randint(6, 22))
+                delta = tgt - last_ts
+                work.loc[mask, "timestamp"] = work.loc[mask, "timestamp"] + delta
+            con.close()
+            continue
+
+        if excess < 0:
+            deficit = -excess
+            cand = qm.run("cr_review_inflight_pre_breach_ids", product_type=None, date_range=None)
+            con.close()
+            ids = cand["application_id"].astype(str).tolist() if len(cand) else []
+            for aid in ids[:deficit]:
+                mask = work["application_id"].astype(str) == aid
+                if not mask.any():
+                    continue
+                work.loc[mask, "timestamp"] = work.loc[mask, "timestamp"] - pd.Timedelta(hours=36)
+            continue
+
+        con.close()
+        break
 
     return work.sort_values(["application_id", "timestamp"]).reset_index(drop=True)
 
@@ -704,37 +742,45 @@ def enforce_cr_breach_ratio_vs_compliance(
 def apply_inflight_stuck_share(
     df: pd.DataFrame,
     *,
-    reference_as_of: pd.Timestamp,
     seed: int,
     share_stuck: float = 0.5,
 ) -> pd.DataFrame:
     """
     Shift non-terminal timelines so ~``share_stuck`` of in-flight apps land >48h before
-    ``reference_as_of`` (stuck) and the rest stay fresh — stable vs dataset-relative SLA/stuck SQL.
+    ``max(timestamp)`` (same clock as stuck SQL) and the rest stay fresh.
+    Uses a deterministic split (sorted application_id) so the stuck share stays near the target.
     """
-    ref = pd.Timestamp(reference_as_of)
-    if ref.tzinfo is not None:
-        ref = ref.tz_localize(None)
-
     out = df.copy()
     out["timestamp"] = pd.to_datetime(out["timestamp"])
-    pieces: list[pd.DataFrame] = []
+    ref = pd.Timestamp(out["timestamp"].max())
+    if ref.tzinfo is not None:
+        ref = ref.tz_localize(None)
+    non_term: list[tuple[str, pd.DataFrame]] = []
+    term_pieces: list[pd.DataFrame] = []
     for aid, g in out.groupby("application_id", sort=False):
         g = g.sort_values("timestamp").reset_index(drop=True)
         last_action = str(g.iloc[-1]["action"])
         if last_action in _TERMINAL_ACTIONS:
-            pieces.append(g)
-            continue
-        r = random.Random((seed + abs(hash(aid))) % (2**31))
-        stuck = r.random() < share_stuck
+            term_pieces.append(g)
+        else:
+            non_term.append((str(aid), g))
+
+    non_term.sort(key=lambda x: x[0])
+    n_if = len(non_term)
+    n_stuck_tgt = int(n_if * share_stuck + 1e-12)
+    stuck_ids = {a for a, _ in non_term[:n_stuck_tgt]}
+    rng = random.Random(seed + 424_242)
+
+    pieces: list[pd.DataFrame] = term_pieces.copy()
+    for aid, g in non_term:
+        stuck = aid in stuck_ids
         last_ts = pd.Timestamp(g.iloc[-1]["timestamp"])
         if stuck:
-            target_last = ref - pd.Timedelta(hours=r.randint(72, 420))
+            target_last = ref - pd.Timedelta(hours=rng.randint(72, 420))
         else:
-            target_last = ref - pd.Timedelta(hours=r.randint(4, 44))
+            target_last = ref - pd.Timedelta(hours=rng.randint(4, 44))
         shift = target_last - last_ts
-        g = g.assign(timestamp=g["timestamp"] + shift)
-        pieces.append(g)
+        pieces.append(g.assign(timestamp=g["timestamp"] + shift))
 
     combined = pd.concat(pieces, ignore_index=True)
     return combined.sort_values(["application_id", "timestamp"]).reset_index(drop=True)
@@ -913,11 +959,11 @@ def generate_synthetic_audit_log(
                 seed=seed,
                 carryover_ratio=carryover_ratio,
             )
-        df = apply_inflight_stuck_share(df, reference_as_of=end, seed=int(seed) + 424_242)
         # Demo-only post-steps (skip tiny synthetic runs used in unit tests).
+        # CR enforcement shifts whole-app timelines and must run before BA weekly injection,
+        # otherwise ISO week buckets lose terminals/customers (inject → enforce broke mins).
+        repo_root = Path(__file__).resolve().parent.parent
         if df["application_id"].nunique() >= 150:
-            repo_root = Path(__file__).resolve().parent.parent
-            df = inject_ba_weekly_floors(df, timeline_end=end, seed=int(seed) + 61_000)
             df = enforce_cr_breach_ratio_vs_compliance(
                 df,
                 repo_root=repo_root,
@@ -925,6 +971,9 @@ def generate_synthetic_audit_log(
                 seed=int(seed),
                 ratio=0.10,
             )
+        df = apply_inflight_stuck_share(df, seed=int(seed) + 424_242)
+        if df["application_id"].nunique() >= 150:
+            df = inject_ba_weekly_floors(df, seed=int(seed) + 61_000, timeline_end=end)
     return df
 
 

@@ -40,11 +40,17 @@ def test_who_has_the_ball_sums_to_inflight() -> None:
     inflight = int(
         con.sql(
             """
-            WITH latest AS (
+            WITH cohort AS (
+                SELECT DISTINCT application_id
+                FROM audit_logs
+                WHERE timestamp::DATE BETWEEN DATE '2026-04-04' AND DATE '2026-04-24'
+            ),
+            latest AS (
                 SELECT
                     application_id,
                     arg_max(action, timestamp) AS last_action
                 FROM audit_logs
+                WHERE application_id IN (SELECT application_id FROM cohort)
                 GROUP BY application_id
             )
             SELECT COUNT(*) FROM latest

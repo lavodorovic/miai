@@ -16,6 +16,7 @@ ENV/
 data/relio_analytics.db
 data/synthetic_logs.csv
 data/synthetic_audit_log.parquet
+data/.bootstrap_tag
 
 # Local run artifacts
 streamlit.log

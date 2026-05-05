@@ -137,6 +137,10 @@ LEGENDS: dict[str, dict[str, str]] = {
 
 
 def subtitle(metric_id: str) -> str:
-    if metric_id not in LEGENDS:
-        raise KeyError(f"Unknown legend id: {metric_id}")
-    return LEGENDS[metric_id]["subtitle"]
+    """Return PHASE_0 helper text; never raises (missing keys degrade gracefully for Cloud drift)."""
+    entry = LEGENDS.get(metric_id)
+    if entry is None:
+        return (
+            f"(Missing legend definition for `{metric_id}` — sync analytics/legend.py with this UI version.)"
+        )
+    return entry["subtitle"]

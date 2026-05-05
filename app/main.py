@@ -24,7 +24,10 @@ from app.tabs import sections  # noqa: E402
 from app.tabs.shared import render_sidebar_client_filters  # noqa: E402
 
 DEFAULT_DB = PROJECT_ROOT / "data" / "relio_analytics.db"
-BUILD_TAG = "build-2026-05-04-overview-collapsed-ba"
+BUILD_TAG = "build-2026-05-05-stuck50-cr10-baweekly"
+# Bump when the synthetic pipeline (synthetic_generator.py / queries) changes the SHAPE of
+# the demo dataset. Cloud caches data/relio_analytics.db across reruns; mismatch forces regen.
+DATA_TAG = "data-2026-05-05-stuck50-cr10-baweekly-v2"
 
 # Overview: hide sidebar panel (collapsed-style); other pages show full sidebar + filters.
 _OVERVIEW_COLLAPSE_SIDEBAR_CSS = """
@@ -154,6 +157,29 @@ def _bootstrap_demo_duckdb(*, repo_root: Path, db_path: Path) -> None:
     finally:
         con.close()
 
+    # Stamp the regenerated DB so future cold-starts can detect pipeline drift.
+    try:
+        (db_path.parent / ".bootstrap_tag").write_text(DATA_TAG, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _bootstrap_tag_path(db_path: Path) -> Path:
+    return db_path.parent / ".bootstrap_tag"
+
+
+def _needs_data_regen(db_path: Path) -> bool:
+    """True if DB is missing OR was built by a previous synthetic pipeline version."""
+    if not db_path.is_file():
+        return True
+    tag_path = _bootstrap_tag_path(db_path)
+    if not tag_path.is_file():
+        return True
+    try:
+        return tag_path.read_text(encoding="utf-8").strip() != DATA_TAG
+    except OSError:
+        return True
+
 
 def _sidebar_product_options(con: duckdb.DuckDBPyConnection) -> list[str]:
     rows = con.sql("SELECT DISTINCT product_type FROM audit_logs ORDER BY 1").fetchall()
@@ -224,11 +250,16 @@ def main() -> None:
     if not db_path.is_absolute():
         db_path = PROJECT_ROOT / db_path
 
-    if not db_path.is_file():
+    if _needs_data_regen(db_path):
+        if db_path.is_file():
+            try:
+                db_path.unlink()
+            except OSError:
+                pass
         try:
             with st.spinner("First boot: generating demo dataset + DuckDB (may take ~30–90s on Cloud)…"):
                 _bootstrap_demo_duckdb(repo_root=PROJECT_ROOT, db_path=db_path)
-            st.success(f"Created demo database at `{db_path}`")
+            st.success(f"Created demo database at `{db_path}` ({DATA_TAG})")
         except Exception as e:  # noqa: BLE001
             st.error(
                 "Could not auto-create the DuckDB file. "
