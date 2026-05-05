@@ -518,6 +518,11 @@ def anchor_application_timelines(
     """
     Shift each application's timestamps by a constant delta so its **last** event lands in a
     window ending at ``timeline_end`` (preserves inter-event gaps and state-machine order).
+
+    Apps that already terminated are spread over the last ~12 weeks (recent-biased) so the
+    BA performance chart shows organic terminal/customer growth instead of a single late
+    spike. In-flight apps stay clustered near the as-of cut so stuck-share enforcement and
+    SLA aging stay realistic.
     """
     out = df.copy()
     out["timestamp"] = pd.to_datetime(out["timestamp"])
@@ -525,9 +530,19 @@ def anchor_application_timelines(
     for aid, g in out.groupby("application_id", sort=False):
         g = g.sort_values("timestamp")
         last_ts = g["timestamp"].iloc[-1]
+        last_action = str(g["action"].iloc[-1])
         r = random.Random((seed + abs(hash(aid))) % (2**31))
-        # Spread application ends across the last ~3 weeks (avoid everyone landing the same hour).
-        back_hours = r.randint(8, 21 * 24)
+        if last_action in _TERMINAL_ACTIONS:
+            # Linear-ramp distribution: prob of week i ∝ (i+1) so anchored terminals
+            # form a clean Jan→Apr growth without clustering at the very end. Pool spans
+            # ~16 weeks back so the chart shows a smooth ramp across the demo window.
+            n_pool = 16
+            weights = list(range(1, n_pool + 1))
+            chosen = r.choices(range(n_pool), weights=weights, k=1)[0]
+            weeks_back = (n_pool - 1 - chosen) + r.random()
+            back_hours = max(8, int(weeks_back * 7 * 24) + r.randint(0, 23))
+        else:
+            back_hours = r.randint(8, 21 * 24)
         target_last = timeline_end - pd.Timedelta(hours=back_hours)
         delta = target_last - last_ts
         g = g.assign(timestamp=g["timestamp"] + delta)
@@ -604,33 +619,78 @@ def _ba_weekly_chart_counts(work: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _ba_weekly_target_curve(
+    weeks: list[pd.Timestamp],
+) -> dict[pd.Timestamp, tuple[int, int, int]]:
+    """Smooth growth-curve targets per ISO week for BA performance chart.
+
+    Replaces the flat-floor look with an organic ramp:
+      - new applications: ~30 → ~120 (concave growth, plateaus in last weeks
+        so injection — which adds to all three series — does not push terminal/
+        customer counts massively above their natural anchored values)
+      - terminal stage:   ~25 → ~120 (lags new apps by ~1 week)
+      - new customers:    ~20 → ~95 (lags terminal by ~1 week)
+
+    Floors (25 / 20 / 4) are still respected as hard minimums.
+    """
+    n = len(weeks)
+    if n == 0:
+        return {}
+    out: dict[pd.Timestamp, tuple[int, int, int]] = {}
+    for i, w in enumerate(weeks):
+        p = i / max(n - 1, 1)
+        # Plateau new_apps target in the final ~25% of weeks. Otherwise injection
+        # (which is success_full and contributes to all three series) inflates the
+        # terminal/customer lines well above the anchored growth.
+        p_new = min(p, 0.78)
+        n_new = 30 + 100 * (p_new ** 1.20)
+
+        p_t = max(0.0, (p - 0.06) / 0.94)
+        n_term = 25 + 100 * (p_t ** 1.30)
+
+        p_c = max(0.0, (p - 0.12) / 0.88)
+        n_cust = 20 + 80 * (p_c ** 1.40)
+
+        n_new_i = max(int(round(n_new)), BA_WEEK_MIN_NEW_APPS)
+        n_term_i = max(int(round(n_term)), BA_WEEK_MIN_TERMINAL)
+        n_cust_i = max(int(round(n_cust)), BA_WEEK_MIN_CUSTOMERS)
+        out[pd.Timestamp(w).normalize()] = (n_new_i, n_term_i, n_cust_i)
+    return out
+
+
 def inject_ba_weekly_floors(
     df: pd.DataFrame,
     *,
     seed: int,
     timeline_end: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
-    """Ensure Business Account weekly minima vs the same SQL buckets as the Overview chart."""
+    """Hit per-week BA performance targets (growth curve, not a flat floor).
+
+    Each injected synthetic app is a ``success_full`` Business Account customer, so it adds
+    +1 to APPLICATION_STARTED, +1 to terminal stage, and +1 to new customers in that week.
+    """
     rng = random.Random(seed + 61_000)
     work = df.copy()
     work["timestamp"] = pd.to_datetime(work["timestamp"])
     synth_i = 0
     for _pass in range(35):
         perf = _ba_weekly_chart_counts(work)
-        total_need = 0
+        weeks = [pd.Timestamp(w).normalize() for w in perf["week_start"].tolist()]
+        targets = _ba_weekly_target_curve(weeks)
         chunk_all: list[dict[str, Any]] = []
         for _, row in perf.iterrows():
             ws = pd.Timestamp(row["week_start"]).normalize()
+            t_new, t_term, t_cust = targets.get(
+                ws, (BA_WEEK_MIN_NEW_APPS, BA_WEEK_MIN_TERMINAL, BA_WEEK_MIN_CUSTOMERS)
+            )
             need = max(
                 0,
-                BA_WEEK_MIN_NEW_APPS - int(row["n_new_applications"]),
-                BA_WEEK_MIN_TERMINAL - int(row["n_terminal_phase"]),
-                BA_WEEK_MIN_CUSTOMERS - int(row["n_accounts_opened"]),
+                t_new - int(row["n_new_applications"]),
+                t_term - int(row["n_terminal_phase"]),
+                t_cust - int(row["n_accounts_opened"]),
             )
             if need <= 0:
                 continue
-            need += 6
-            total_need += need
             for _ in range(need):
                 aid = f"synth-ba-{ws.strftime('%Y%m%d')}-{synth_i}"
                 synth_i += 1

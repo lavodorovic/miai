@@ -57,8 +57,8 @@ def test_anchor_moves_last_event_into_window() -> None:
     anchored = anchor_application_timelines(df, timeline_end=end, seed=3)
     new_max = pd.to_datetime(anchored["timestamp"]).max()
     assert new_max <= end
-    # Anchor spreads each app's last event up to 21d before timeline_end (see synthetic_generator.back_hours).
-    assert new_max >= end - pd.Timedelta(hours=21 * 24)
+    # Terminal apps spread up to 12 weeks back (organic BA growth); in-flight stay within 3 weeks.
+    assert new_max >= end - pd.Timedelta(weeks=12)
     assert len(anchored) == len(df)
 
 
