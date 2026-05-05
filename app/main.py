@@ -21,14 +21,25 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from analytics.query_manager import QueryManager  # noqa: E402
 from app.tabs import sections  # noqa: E402
-from app.tabs.shared import (  # noqa: E402
-    pct_delta,
-    previous_date_range,
-    render_sidebar_client_filters,
-)
+from app.tabs.shared import render_sidebar_client_filters  # noqa: E402
 
 DEFAULT_DB = PROJECT_ROOT / "data" / "relio_analytics.db"
-BUILD_TAG = "build-2026-04-27-arrivals-chart"
+BUILD_TAG = "build-2026-05-04-overview-collapsed-ba"
+
+# Overview: hide sidebar panel (collapsed-style); other pages show full sidebar + filters.
+_OVERVIEW_COLLAPSE_SIDEBAR_CSS = """
+<style>
+section[data-testid="stSidebar"] {
+    display: none !important;
+}
+section[data-testid="stSidebar"] ~ div {
+    margin-left: 0 !important;
+}
+div[data-testid="stSidebarCollapsedControl"] {
+    display: none !important;
+}
+</style>
+"""
 
 # Tighten layout on phones / narrow viewports (Streamlit + embedded chart iframes).
 _MOBILE_VIEWPORT_CSS = """
@@ -164,8 +175,7 @@ def main() -> None:
     st.set_page_config(
         page_title="Relio Operations Intelligence",
         layout="wide",
-        # Narrow viewports: sidebar starts hidden; desktop starts expanded (Streamlit default behavior).
-        initial_sidebar_state="auto",
+        initial_sidebar_state="expanded",
         menu_items={
             "Get help": None,
             "Report a bug": None,
@@ -196,10 +206,20 @@ def main() -> None:
     )
     overview_mode = nav == "Overview"
 
-    db_rel = st.sidebar.text_input(
-        "DuckDB path (relative to project)",
-        value="data/relio_analytics.db",
-    )
+    if overview_mode:
+        st.markdown(_OVERVIEW_COLLAPSE_SIDEBAR_CSS, unsafe_allow_html=True)
+        db_rel = st.text_input(
+            "DuckDB path (relative to project)",
+            value="data/relio_analytics.db",
+            key="relio_db_path_input",
+        )
+    else:
+        db_rel = st.sidebar.text_input(
+            "DuckDB path (relative to project)",
+            value="data/relio_analytics.db",
+            key="relio_db_path_input",
+        )
+
     db_path = Path(db_rel)
     if not db_path.is_absolute():
         db_path = PROJECT_ROOT / db_path
@@ -228,10 +248,8 @@ def main() -> None:
 
     min_d, max_d = _sidebar_date_bounds(con)
 
-    with st.sidebar:
-        if overview_mode:
-            st.caption("Overview uses all products and the full audit date range (no filters here).")
-        else:
+    if not overview_mode:
+        with st.sidebar:
             st.header("Filters")
             product_choices = _sidebar_product_options(con)
             product_choice = st.selectbox("Product type", product_choices, key="sidebar_product_type")

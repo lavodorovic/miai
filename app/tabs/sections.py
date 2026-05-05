@@ -109,7 +109,7 @@ def run_overview(*, qm: QueryManager, product_filter, date_range, min_d, max_d, 
         else pd.DataFrame()
     )
     n_completed_lm = int(compl_df.iloc[0]["n_completed_last_30d"]) if len(compl_df) else 0
-    pct_lm_trend = compl_df.iloc[0]["pct_vs_prior_3_periods_trend"] if len(compl_df) else None
+    pct_lm_trend = compl_df.iloc[0]["pct_change_vs_90d_trend"] if len(compl_df) else None
     try:
         pct_lm_trend_f = float(pct_lm_trend) if pct_lm_trend is not None and pd.notna(pct_lm_trend) else None
     except (TypeError, ValueError):
@@ -143,9 +143,9 @@ def run_overview(*, qm: QueryManager, product_filter, date_range, min_d, max_d, 
         else "n/a"
     )
     s1.metric(
-        "vs prior 3×30d avg (completions)",
+        "Change vs 90d trend",
         trend_label,
-        help="Versus the average terminal-completion count in the three prior non-overlapping 30-day periods.",
+        help="Versus the pace implied by terminal completions in the 90 days before that window (expected 30d ≈ prior-90d total ÷ 3).",
     )
     s2.metric("CR breached (dataset as-of)", f"{_sla_n('CR review', 'breached'):,}")
     s3.metric("Compliance breached (dataset as-of)", f"{_sla_n('Compliance', 'breached'):,}")
@@ -160,12 +160,16 @@ def run_overview(*, qm: QueryManager, product_filter, date_range, min_d, max_d, 
     st.metric("Stale in-flight (last event 24h+ ago)", f"{n_stale_24h:,}")
     
     perf_df = (
-        qm.run("overview_performance_weekly", product_type=product_filter, date_range=date_range)
+        qm.run(
+            "overview_performance_weekly",
+            product_type="Business Account",
+            date_range=date_range,
+        )
         if date_range is not None
         else pd.DataFrame()
     )
     # Full-width charts (stacked): half-width columns squeeze Altair and can force rotated SLA labels.
-    st.markdown("**Performance** (weekly)")
+    st.markdown("**BA performance** (weekly · Business Account)")
     if perf_df.empty or date_range is None:
         st.caption("No rows for the performance series in this filter.")
     else:
@@ -182,7 +186,7 @@ def run_overview(*, qm: QueryManager, product_filter, date_range, min_d, max_d, 
         n_stuck=n_stuck,
         pct_stuck=pct_stuck,
         n_completed_last_30d=n_completed_lm,
-        pct_vs_prior_3mo=pct_lm_trend_f,
+        pct_change_vs_90d=pct_lm_trend_f,
         sla=sla,
         ball=ball,
     ):

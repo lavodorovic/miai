@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import json
 import random
+import sys
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -45,6 +47,11 @@ PRODUCT_TYPES = (
     "Business Account",
     "Capital Payments Account",
 )
+
+BA_PRODUCT = "Business Account"
+BA_WEEK_MIN_NEW_APPS = 25
+BA_WEEK_MIN_TERMINAL = 20
+BA_WEEK_MIN_CUSTOMERS = 4
 
 
 def _che_uid(rng: random.Random) -> str:
@@ -545,6 +552,155 @@ def _carryover_cut_index(actions: list[str]) -> int:
     return max(3, min(cut, len(actions) - 1))
 
 
+def _compress_timeline_into_week(
+    rows: list[dict[str, Any]],
+    week_start: pd.Timestamp,
+    rng: random.Random,
+) -> list[dict[str, Any]]:
+    rows = sorted(rows, key=lambda r: r["timestamp"])
+    t0 = pd.Timestamp(rows[0]["timestamp"])
+    t1 = pd.Timestamp(rows[-1]["timestamp"])
+    span_s = max((t1 - t0).total_seconds(), 1.0)
+    week_end = week_start + pd.Timedelta(days=7) - pd.Timedelta(seconds=1)
+    slot_s = float(min(max(8 * 3600, span_s), 6 * 86400 + rng.randint(0, 7200)))
+    w0 = week_start + pd.Timedelta(hours=rng.randint(2, 36))
+    if w0 + pd.Timedelta(seconds=slot_s) > week_end:
+        w0 = week_start + pd.Timedelta(hours=rng.randint(1, 12))
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        frac = (pd.Timestamp(r["timestamp"]) - t0).total_seconds() / span_s
+        ts = w0 + pd.Timedelta(seconds=frac * slot_s)
+        if ts < week_start:
+            ts = week_start + pd.Timedelta(minutes=rng.randint(1, 120))
+        if ts > week_end:
+            ts = week_end - pd.Timedelta(minutes=rng.randint(1, 180))
+        out.append({**r, "timestamp": ts})
+    return out
+
+
+def inject_ba_weekly_floors(df: pd.DataFrame, *, timeline_end: pd.Timestamp, seed: int) -> pd.DataFrame:
+    """Ensure Business Account weekly minima for demo charts (distinct apps per ISO week)."""
+    rng = random.Random(seed + 61_000)
+    ref = pd.Timestamp(timeline_end)
+    if ref.tzinfo is not None:
+        ref = ref.tz_localize(None)
+    work = df.copy()
+    work["timestamp"] = pd.to_datetime(work["timestamp"])
+    ts_max = work["timestamp"].max()
+    ts_min = work["timestamp"].min()
+    start = pd.Timestamp(ts_min).normalize()
+    start = start - pd.Timedelta(days=int(start.weekday()))
+    extra: list[dict[str, Any]] = []
+    synth_i = 0
+    for ws in pd.date_range(start=start, end=ts_max + pd.Timedelta(days=8), freq="W-MON"):
+        ws = pd.Timestamp(ws).normalize()
+        band = (work["timestamp"] >= ws) & (work["timestamp"] < ws + pd.Timedelta(days=7))
+        ba = work["product_type"].astype(str) == BA_PRODUCT
+
+        n_new = work.loc[ba & band & (work["action"].astype(str) == "APPLICATION_STARTED"), "application_id"].nunique()
+        n_term = work.loc[
+            ba & band & work["action"].astype(str).isin(_TERMINAL_ACTIONS),
+            "application_id",
+        ].nunique()
+        n_cust = work.loc[
+            ba & band & (work["action"].astype(str) == "MASTER_DATA_SUBMITTED"),
+            "application_id",
+        ].nunique()
+
+        need = max(
+            0,
+            BA_WEEK_MIN_NEW_APPS - int(n_new),
+            BA_WEEK_MIN_TERMINAL - int(n_term),
+            BA_WEEK_MIN_CUSTOMERS - int(n_cust),
+        )
+
+        for _ in range(need):
+            aid = f"synth-ba-{ws.strftime('%Y%m%d')}-{synth_i}"
+            synth_i += 1
+            app = SyntheticApplication(
+                application_id=aid,
+                customer_email=f"{aid}@floor.example.com",
+                signatory_email=None,
+                company_name=f"FloorCo {synth_i}",
+                company_uid=_che_uid(rng),
+                assigned_cr=CR_ROSTER[synth_i % len(CR_ROSTER)],
+                assigned_compliance=COMPLIANCE_ROSTER[synth_i % len(COMPLIANCE_ROSTER)],
+                product_type=BA_PRODUCT,
+                scenario="success_full",
+                interaction_rounds=1,
+                rng=random.Random(rng.randint(0, 2**31 - 1)),
+            )
+            t0 = datetime(ws.year, ws.month, ws.day, rng.randint(6, 20), rng.randint(0, 59))
+            raw_rows = build_timeline(app, t0)
+            extra.extend(_compress_timeline_into_week(raw_rows, ws, rng))
+
+    if not extra:
+        return work
+    add_df = audit_frame(extra)
+    return pd.concat([work, add_df], ignore_index=True).sort_values(
+        ["application_id", "timestamp"]
+    ).reset_index(drop=True)
+
+
+def enforce_cr_breach_ratio_vs_compliance(
+    df: pd.DataFrame,
+    *,
+    repo_root: Path,
+    timeline_end: pd.Timestamp,
+    seed: int,
+    ratio: float = 0.10,
+) -> pd.DataFrame:
+    """Reduce CR SLA breaches until count ≈ ratio × Compliance breaches (dataset as-of)."""
+    import duckdb
+
+    rr = str(repo_root.resolve())
+    if rr not in sys.path:
+        sys.path.insert(0, rr)
+
+    from analytics.ddl_loader import apply_ddl
+    from analytics.query_manager import QueryManager
+
+    ref = pd.Timestamp(timeline_end)
+    if ref.tzinfo is not None:
+        ref = ref.tz_localize(None)
+    rng = random.Random(seed + 313_131)
+    work = df.copy()
+    work["timestamp"] = pd.to_datetime(work["timestamp"])
+
+    for _ in range(120):
+        con = duckdb.connect(":memory:")
+        con.register("audit_logs_df", work)
+        con.execute("CREATE TABLE audit_logs AS SELECT * FROM audit_logs_df")
+        apply_ddl(con, repo_root)
+        qm = QueryManager(con)
+        sql = qm.load_sql("sla_breached_applications")
+        sql = sql.replace("\nLIMIT 200", "").replace("LIMIT 200;", "").replace("LIMIT 200", "")
+        br = qm.run_sql(sql, product_type=None, date_range=None)
+        con.close()
+
+        if br.empty:
+            break
+        cr = br.loc[br["sla_area"].astype(str) == "CR review", "application_id"].astype(str).tolist()
+        comp = br.loc[br["sla_area"].astype(str) == "Compliance", "application_id"].astype(str).tolist()
+        n_c = len(comp)
+        target = int(round(ratio * n_c)) if n_c > 0 else 0
+        excess = len(cr) - target
+        if excess <= 0:
+            break
+        rng.shuffle(cr)
+        for aid in cr[:excess]:
+            mask = work["application_id"].astype(str) == aid
+            if not mask.any():
+                continue
+            g = work.loc[mask].sort_values("timestamp")
+            last_ts = pd.Timestamp(g.iloc[-1]["timestamp"])
+            tgt = ref - pd.Timedelta(hours=rng.randint(6, 22))
+            delta = tgt - last_ts
+            work.loc[mask, "timestamp"] = work.loc[mask, "timestamp"] + delta
+
+    return work.sort_values(["application_id", "timestamp"]).reset_index(drop=True)
+
+
 def apply_inflight_stuck_share(
     df: pd.DataFrame,
     *,
@@ -675,12 +831,12 @@ def generate_synthetic_audit_log(
     start_base = datetime.fromisoformat(start_date)
 
     scenarios_weights: list[tuple[str, float]] = [
-        ("success_full", 0.40),
+        ("success_full", 0.44),
         ("success_with_loops", 0.16),
         ("stalled_customer", 0.05),
         ("stalled_offer", 0.05),
         ("stalled_ops_compliance", 0.12),
-        ("stalled_cr_review", 0.05),
+        ("stalled_cr_review", 0.01),
         ("rejected", 0.07),
         ("cancelled_mid", 0.05),
         ("offer_refused", 0.05),
@@ -758,6 +914,17 @@ def generate_synthetic_audit_log(
                 carryover_ratio=carryover_ratio,
             )
         df = apply_inflight_stuck_share(df, reference_as_of=end, seed=int(seed) + 424_242)
+        # Demo-only post-steps (skip tiny synthetic runs used in unit tests).
+        if df["application_id"].nunique() >= 150:
+            repo_root = Path(__file__).resolve().parent.parent
+            df = inject_ba_weekly_floors(df, timeline_end=end, seed=int(seed) + 61_000)
+            df = enforce_cr_breach_ratio_vs_compliance(
+                df,
+                repo_root=repo_root,
+                timeline_end=end,
+                seed=int(seed),
+                ratio=0.10,
+            )
     return df
 
 

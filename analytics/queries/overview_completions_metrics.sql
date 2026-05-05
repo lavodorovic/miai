@@ -1,5 +1,6 @@
--- Terminal completions: trailing 30 days ending at max(timestamp), vs average count
--- in each of the three prior non-overlapping 30-day blocks (older → newer).
+-- Cases completed (terminal) in trailing 30 days + change vs 90-day trend.
+-- Trend = pace implied by terminal completions in the 90 calendar days *before* the last-30d window
+--   (i.e. days [ref_d - 119, ref_d - 30] inclusive): expected count for a 30-day stretch = total_90 / 3.
 
 WITH ref AS (
     SELECT max(timestamp)::DATE AS ref_d
@@ -9,14 +10,10 @@ WITH ref AS (
 bounds AS (
     SELECT
         ref_d,
-        ref_d - INTERVAL '29 DAY' AS block0_start,
-        ref_d AS block0_end,
-        ref_d - INTERVAL '59 DAY' AS block1_start,
-        ref_d - INTERVAL '30 DAY' AS block1_end,
-        ref_d - INTERVAL '89 DAY' AS block2_start,
-        ref_d - INTERVAL '60 DAY' AS block2_end,
-        ref_d - INTERVAL '119 DAY' AS block3_start,
-        ref_d - INTERVAL '90 DAY' AS block3_end
+        ref_d - INTERVAL '29 DAY' AS last30_start,
+        ref_d AS last30_end,
+        ref_d - INTERVAL '119 DAY' AS prior90_start,
+        ref_d - INTERVAL '30 DAY' AS prior90_end
     FROM ref
 ),
 terminal AS (
@@ -31,42 +28,31 @@ terminal AS (
           'OFFER_REFUSED'
       )
 ),
-counts AS (
+cnt AS (
     SELECT
         (
             SELECT COUNT(DISTINCT application_id)
             FROM terminal
             CROSS JOIN bounds AS b
-            WHERE d BETWEEN b.block0_start AND b.block0_end
+            WHERE d BETWEEN b.last30_start AND b.last30_end
         )::DOUBLE AS n_last_30d,
         (
             SELECT COUNT(DISTINCT application_id)
             FROM terminal
             CROSS JOIN bounds AS b
-            WHERE d BETWEEN b.block1_start AND b.block1_end
-        )::DOUBLE AS n_prev_a,
-        (
-            SELECT COUNT(DISTINCT application_id)
-            FROM terminal
-            CROSS JOIN bounds AS b
-            WHERE d BETWEEN b.block2_start AND b.block2_end
-        )::DOUBLE AS n_prev_b,
-        (
-            SELECT COUNT(DISTINCT application_id)
-            FROM terminal
-            CROSS JOIN bounds AS b
-            WHERE d BETWEEN b.block3_start AND b.block3_end
-        )::DOUBLE AS n_prev_c
+            WHERE d BETWEEN b.prior90_start AND b.prior90_end
+        )::DOUBLE AS n_prior_90d
+    FROM bounds
 )
 SELECT
     n_last_30d::BIGINT AS n_completed_last_30d,
-    ((n_prev_a + n_prev_b + n_prev_c) / 3.0) AS avg_completed_prior_3x30d,
+    (n_prior_90d / 3.0) AS trend_30d_from_90d_pace,
     CASE
-        WHEN (n_prev_a + n_prev_b + n_prev_c) > 0 THEN
+        WHEN n_prior_90d > 0 THEN
             (
-                (n_last_30d - ((n_prev_a + n_prev_b + n_prev_c) / 3.0))
-                / ((n_prev_a + n_prev_b + n_prev_c) / 3.0)
+                (n_last_30d - (n_prior_90d / 3.0))
+                / (n_prior_90d / 3.0)
             ) * 100.0
         ELSE NULL
-    END AS pct_vs_prior_3_periods_trend
-FROM counts;
+    END AS pct_change_vs_90d_trend
+FROM cnt;

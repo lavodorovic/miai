@@ -36,13 +36,14 @@ LEGENDS: dict[str, dict[str, str]] = {
     "overview_completions_metrics": {
         "subtitle": (
             "Terminal outcomes (distinct applications) · Last 30 days ending at max(timestamp); "
-            "trend % compares to the average count in the three prior non-overlapping 30-day blocks · Product/date filters apply."
+            "‘Change vs 90d trend’ compares that count to the pace implied by completions in the prior 90 days "
+            "(expected 30d ≈ prior-90d total ÷ 3) · Product/date filters apply."
         ),
     },
     "overview_performance_weekly": {
         "subtitle": (
-            "Distinct applications per ISO week · New = APPLICATION_STARTED; terminal phase = any terminal action; "
-            "accounts opened = MASTER_DATA_SUBMITTED · Weekly buckets from audit timestamps."
+            "Business Account only · Distinct applications per ISO week · New applications = APPLICATION_STARTED; "
+            "terminal stage = any terminal action; new customers = MASTER_DATA_SUBMITTED · Weekly buckets from audit timestamps."
         ),
     },
     "funnel_latest_stage": {

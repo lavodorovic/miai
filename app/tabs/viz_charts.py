@@ -679,7 +679,7 @@ def _executive_insights(
     n_stuck: int,
     pct_stuck: float,
     n_completed_last_30d: int,
-    pct_vs_prior_3mo: float | None,
+    pct_change_vs_90d: float | None,
     sla: pd.DataFrame,
     ball: pd.DataFrame,
 ) -> list[str]:
@@ -698,8 +698,8 @@ def _executive_insights(
         top_team = ball.sort_values("n_applications", ascending=False).iloc[0]
         insights.append(f"Most in-flight work currently waits on {top_team['team']} ({int(top_team['n_applications']):,} apps).")
     trend_txt = (
-        f"{pct_vs_prior_3mo:+.1f}% vs the prior 3-month average"
-        if pct_vs_prior_3mo is not None and not pd.isna(pct_vs_prior_3mo)
+        f"{pct_change_vs_90d:+.1f}% vs 90d trend"
+        if pct_change_vs_90d is not None and not pd.isna(pct_change_vs_90d)
         else "n/a (insufficient history)"
     )
     insights.append(
@@ -1089,8 +1089,8 @@ def _overview_performance_weekly_chart(perf: pd.DataFrame) -> None:
     )
     labels = {
         "n_new_applications": "New applications",
-        "n_terminal_phase": "Applications reaching terminal phase",
-        "n_accounts_opened": "Accounts opened",
+        "n_terminal_phase": "Applications reaching terminal stage",
+        "n_accounts_opened": "New customers",
     }
     long["series"] = long["series"].astype(str).map(labels)
     chart = (
@@ -1098,7 +1098,7 @@ def _overview_performance_weekly_chart(perf: pd.DataFrame) -> None:
         .mark_line(interpolate="monotone", strokeWidth=1.2)
         .encode(
             x=alt.X("week_start:T", title="Week (start)"),
-            y=alt.Y("n:Q", title="Applications (distinct per week)"),
+            y=alt.Y("n:Q", title="Count (distinct apps per week)"),
             color=alt.Color("series:N", title=""),
             tooltip=[
                 alt.Tooltip("week_start:T", title="Week"),
