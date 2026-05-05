@@ -176,6 +176,26 @@ def main() -> None:
     st.title("Relio Ops Intelligence")
     st.caption(f"UI {BUILD_TAG}")
 
+    _PAGE_LABELS = [
+        "Overview",
+        "Period",
+        "Bottleneck",
+        "Rework",
+        "Team",
+        "SLA",
+        "Capacity",
+        "Cohort",
+        "Investigate",
+    ]
+    nav = st.radio(
+        "Navigate",
+        _PAGE_LABELS,
+        horizontal=True,
+        label_visibility="collapsed",
+        key="main_nav_page",
+    )
+    overview_mode = nav == "Overview"
+
     db_rel = st.sidebar.text_input(
         "DuckDB path (relative to project)",
         value="data/relio_analytics.db",
@@ -206,60 +226,52 @@ def main() -> None:
 
     qm = QueryManager(con)
 
-    st.sidebar.header("Filters")
-    product_choices = _sidebar_product_options(con)
-    product_choice = st.sidebar.selectbox("Product type", product_choices, key="sidebar_product_type")
-    product_filter = _parse_product_filter(product_choice)
-
     min_d, max_d = _sidebar_date_bounds(con)
-    e2e_dr = os.environ.get("RELIO_E2E_DATE_RANGE", "").strip()
-    if e2e_dr and "," in e2e_dr:
-        try:
-            a, b = [s.strip() for s in e2e_dr.split(",", 1)]
-            default_dr = (pd.to_datetime(a).date(), pd.to_datetime(b).date())
-        except Exception:  # noqa: BLE001
-            default_dr = (min_d, max_d)
-    else:
-        # Demo-friendly default: a recent window ending at the max date.
-        # Picking min→max makes period start snapshot trivially collapse to step 0 (no prior history).
-        lookback_days = 21
-        try:
-            start_d = max(min_d, (pd.to_datetime(max_d) - pd.Timedelta(days=lookback_days)).date())
-        except Exception:  # noqa: BLE001
-            start_d = min_d
-        default_dr = (start_d, max_d)
-    dr = st.sidebar.date_input(
-        "Date range",
-        value=default_dr,
-        min_value=min_d,
-        max_value=max_d,
-    )
-    if isinstance(dr, tuple) and len(dr) == 2:
-        date_range = (str(dr[0]), str(dr[1]))
-    elif hasattr(dr, "isoformat"):
-        ds = dr.isoformat()[:10]
-        date_range = (ds, ds)
-    else:
-        date_range = None
 
-    tab_overview, tab_period, tab_bottleneck, tab_rework, tab_team, tab_sla, tab_capacity, tab_cohort, tab_investigate = st.tabs(
-        [
-            "Overview",
-            "Period",
-            "Bottleneck",
-            "Rework",
-            "Team",
-            "SLA",
-            "Capacity",
-            "Cohort",
-            "Investigate",
-        ]
-    )
+    with st.sidebar:
+        if overview_mode:
+            st.caption("Overview uses all products and the full audit date range (no filters here).")
+        else:
+            st.header("Filters")
+            product_choices = _sidebar_product_options(con)
+            product_choice = st.selectbox("Product type", product_choices, key="sidebar_product_type")
+            e2e_dr = os.environ.get("RELIO_E2E_DATE_RANGE", "").strip()
+            if e2e_dr and "," in e2e_dr:
+                try:
+                    a, b = [s.strip() for s in e2e_dr.split(",", 1)]
+                    default_dr = (pd.to_datetime(a).date(), pd.to_datetime(b).date())
+                except Exception:  # noqa: BLE001
+                    default_dr = (min_d, max_d)
+            else:
+                lookback_days = 21
+                try:
+                    start_d = max(min_d, (pd.to_datetime(max_d) - pd.Timedelta(days=lookback_days)).date())
+                except Exception:  # noqa: BLE001
+                    start_d = min_d
+                default_dr = (start_d, max_d)
+            dr = st.date_input(
+                "Date range",
+                value=default_dr,
+                min_value=min_d,
+                max_value=max_d,
+            )
+            if isinstance(dr, tuple) and len(dr) == 2:
+                date_range = (str(dr[0]), str(dr[1]))
+            elif hasattr(dr, "isoformat"):
+                ds = dr.isoformat()[:10]
+                date_range = (ds, ds)
+            else:
+                date_range = None
+            product_filter = _parse_product_filter(product_choice)
 
+    if overview_mode:
+        date_range = (str(min_d), str(max_d))
+        product_filter = None
+        product_choice = "(All)"
 
-    ui_filters = render_sidebar_client_filters()
+    ui_filters = render_sidebar_client_filters(enabled=not overview_mode)
 
-    with tab_overview:
+    if nav == "Overview":
         sections.run_overview(
             qm=qm,
             product_filter=product_filter,
@@ -269,8 +281,7 @@ def main() -> None:
             product_choice=product_choice,
             ui_filters=ui_filters,
         )
-
-    with tab_period:
+    elif nav == "Period":
         sections.run_period(
             qm=qm,
             product_filter=product_filter,
@@ -280,8 +291,7 @@ def main() -> None:
             product_choice=product_choice,
             ui_filters=ui_filters,
         )
-
-    with tab_bottleneck:
+    elif nav == "Bottleneck":
         sections.run_bottleneck(
             qm=qm,
             product_filter=product_filter,
@@ -291,8 +301,7 @@ def main() -> None:
             product_choice=product_choice,
             ui_filters=ui_filters,
         )
-
-    with tab_rework:
+    elif nav == "Rework":
         sections.run_rework(
             qm=qm,
             product_filter=product_filter,
@@ -302,8 +311,7 @@ def main() -> None:
             product_choice=product_choice,
             ui_filters=ui_filters,
         )
-
-    with tab_team:
+    elif nav == "Team":
         sections.run_team(
             qm=qm,
             product_filter=product_filter,
@@ -313,8 +321,7 @@ def main() -> None:
             product_choice=product_choice,
             ui_filters=ui_filters,
         )
-
-    with tab_sla:
+    elif nav == "SLA":
         sections.run_sla(
             qm=qm,
             product_filter=product_filter,
@@ -324,8 +331,7 @@ def main() -> None:
             product_choice=product_choice,
             ui_filters=ui_filters,
         )
-
-    with tab_capacity:
+    elif nav == "Capacity":
         sections.run_capacity(
             qm=qm,
             product_filter=product_filter,
@@ -335,8 +341,7 @@ def main() -> None:
             product_choice=product_choice,
             ui_filters=ui_filters,
         )
-
-    with tab_cohort:
+    elif nav == "Cohort":
         sections.run_cohort(
             qm=qm,
             product_filter=product_filter,
@@ -346,8 +351,7 @@ def main() -> None:
             product_choice=product_choice,
             ui_filters=ui_filters,
         )
-
-    with tab_investigate:
+    elif nav == "Investigate":
         sections.run_investigate(
             qm=qm,
             product_filter=product_filter,

@@ -88,29 +88,32 @@ def run_overview(*, qm: QueryManager, product_filter, date_range, min_d, max_d, 
         date_range=date_range,
     )
     n_stuck = stuck_df["application_id"].nunique() if len(stuck_df) else 0
-    pct_stuck = (100.0 * n_stuck / denom) if denom else 0.0
+    pct_stuck = (100.0 * n_stuck / n_active) if n_active else 0.0
     
-    k0, k1, k2, k3 = st.columns(4)
+    k0, k1, k2 = st.columns(3)
     k0.metric(
-        "In filter (cohort)",
-        f"{denom:,}",
-        help="Applications that have at least one audit row in the selected product and date range.",
-    )
-    k1.metric(
         "In-flight (not finished)",
         f"{n_active:,}",
-        help="Same cohort, but latest event is not a terminal outcome (e.g. not master data submitted).",
+        help="Latest event is not a terminal outcome (e.g. not master data submitted); cohort per sidebar scope.",
     )
-    k2.metric("Avg. processing time (days)", f"{avg_days:.1f}")
-    k3.metric("% stuck > 48h (in-flight)", f"{pct_stuck:.1f}%")
+    k1.metric("Avg. processing time (days)", f"{avg_days:.1f}")
+    k2.metric(
+        "% stuck > 48h (of in-flight)",
+        f"{pct_stuck:.1f}%",
+        help="Share of in-flight applications whose latest event is over 48h before dataset max timestamp.",
+    )
     
-    thr = (
-        qm.run("throughput_daily", product_type=product_filter, date_range=date_range)
+    compl_df = (
+        qm.run("overview_completions_metrics", product_type=product_filter, date_range=date_range)
         if date_range is not None
         else pd.DataFrame()
     )
-    thr_7d = int(thr.tail(7)["n_terminated"].sum()) if len(thr) else 0
-    thr_ma7 = float(thr.tail(1)["n_terminated_ma7"].iloc[0]) if len(thr) else 0.0
+    n_completed_lm = int(compl_df.iloc[0]["n_completed_last_30d"]) if len(compl_df) else 0
+    pct_lm_trend = compl_df.iloc[0]["pct_vs_prior_3_periods_trend"] if len(compl_df) else None
+    try:
+        pct_lm_trend_f = float(pct_lm_trend) if pct_lm_trend is not None and pd.notna(pct_lm_trend) else None
+    except (TypeError, ValueError):
+        pct_lm_trend_f = None
     
     sla = qm.run(
         "sla_breach_overview",
@@ -129,10 +132,23 @@ def run_overview(*, qm: QueryManager, product_filter, date_range, min_d, max_d, 
         return int(sla.loc[m, "n_applications"].sum()) if m.any() else 0
     
     s0, s1, s2, s3 = st.columns(4)
-    s0.metric("Throughput (terminal) last 7d", f"{thr_7d:,}")
-    s1.metric("Throughput MA7 (per day)", f"{thr_ma7:.1f}")
-    s2.metric("CR breached (as of now)", f"{_sla_n('CR review', 'breached'):,}")
-    s3.metric("Compliance breached (as of now)", f"{_sla_n('Compliance', 'breached'):,}")
+    s0.metric(
+        "Cases completed (terminal, last 30 days)",
+        f"{n_completed_lm:,}",
+        help="Distinct applications reaching any terminal outcome in the trailing 30 days ending at the latest audit date.",
+    )
+    trend_label = (
+        f"{pct_lm_trend_f:+.1f}%"
+        if pct_lm_trend_f is not None
+        else "n/a"
+    )
+    s1.metric(
+        "vs prior 3×30d avg (completions)",
+        trend_label,
+        help="Versus the average terminal-completion count in the three prior non-overlapping 30-day periods.",
+    )
+    s2.metric("CR breached (dataset as-of)", f"{_sla_n('CR review', 'breached'):,}")
+    s3.metric("Compliance breached (dataset as-of)", f"{_sla_n('Compliance', 'breached'):,}")
     
     stale_df = (
         qm.run("kpi_inflight_stale_24h", product_type=product_filter, date_range=date_range)
@@ -143,12 +159,17 @@ def run_overview(*, qm: QueryManager, product_filter, date_range, min_d, max_d, 
     st.caption("Stale 24h = in-flight apps whose last event is over 24h ago (excludes completed/cancelled).")
     st.metric("Stale in-flight (last event 24h+ ago)", f"{n_stale_24h:,}")
     
+    perf_df = (
+        qm.run("overview_performance_weekly", product_type=product_filter, date_range=date_range)
+        if date_range is not None
+        else pd.DataFrame()
+    )
     # Full-width charts (stacked): half-width columns squeeze Altair and can force rotated SLA labels.
-    st.markdown("**Throughput** (terminal/day + 7d MA dashed)")
-    if thr.empty or date_range is None:
-        st.caption("Select a date range to see the throughput series.")
+    st.markdown("**Performance** (weekly)")
+    if perf_df.empty or date_range is None:
+        st.caption("No rows for the performance series in this filter.")
     else:
-        _throughput_daily_chart(thr)
+        _overview_performance_weekly_chart(perf_df)
     st.markdown("**SLA mix** (in-flight by area)")
     if sla.empty:
         st.caption("No in-flight rows for SLA breakdown.")
@@ -160,19 +181,19 @@ def run_overview(*, qm: QueryManager, product_filter, date_range, min_d, max_d, 
         n_active=n_active,
         n_stuck=n_stuck,
         pct_stuck=pct_stuck,
-        thr_7d=thr_7d,
-        thr_ma7=thr_ma7,
+        n_completed_last_30d=n_completed_lm,
+        pct_vs_prior_3mo=pct_lm_trend_f,
         sla=sla,
         ball=ball,
     ):
         st.markdown(f"- {insight}")
     
     with st.expander("KPI definitions (PHASE_0 §5)", expanded=False):
-        st.caption(legend_subtitle("kpi_in_filter"))
         st.caption(legend_subtitle("kpi_in_flight"))
         st.caption(legend_subtitle("kpi_avg_processing"))
         st.caption(legend_subtitle("kpi_pct_stuck"))
-        st.caption(legend_subtitle("throughput_daily"))
+        st.caption(legend_subtitle("overview_completions_metrics"))
+        st.caption(legend_subtitle("overview_performance_weekly"))
         st.caption(legend_subtitle("sla_breach_overview"))
     
     st.subheader("Latest stage per application — swimlanes (snapshot)")
@@ -926,6 +947,14 @@ def run_rework(*, qm: QueryManager, product_filter, date_range, min_d, max_d, pr
                 st.dataframe(by_prod, hide_index=True, width="stretch")
 
 
+def _rows_without_customer_actors(df: pd.DataFrame, *, col: str = "actor") -> pd.DataFrame:
+    """Exclude synthetic customer identities (`customer…`) from per-actor team views."""
+    if df.empty or col not in df.columns:
+        return df
+    m = ~df[col].astype(str).str.lower().str.startswith("customer")
+    return df.loc[m].copy()
+
+
 def run_team(*, qm: QueryManager, product_filter, date_range, min_d, max_d, product_choice: str, ui_filters: ClientFilters) -> None:
     st.header("Team")
     st.caption("Per-actor workload view for CR and Compliance.")
@@ -945,12 +974,13 @@ def run_team(*, qm: QueryManager, product_filter, date_range, min_d, max_d, prod
                 wl[col] = pd.to_numeric(wl[col], errors="coerce").fillna(0)
             wl["suggested_rebalance_flag"] = wl["suggested_rebalance_flag"].fillna(False).astype(bool)
             wl = filter_dataframe(wl, ui_filters, team_col="team", actor_col="actor", stage_col=None)
+            wl_actors = _rows_without_customer_actors(wl)
     
             cr_open = int(wl.loc[wl["team"] == "CR", "open_cases_now"].sum())
             comp_open = int(wl.loc[wl["team"] == "Compliance", "open_cases_now"].sum())
-            attention = _team_workload_exceptions(wl)
-            max_age = float(wl["p90_age_open_days"].max()) if len(wl) else 0.0
-            active_actors = int((wl["open_cases_now"] > 0).sum())
+            attention = _team_workload_exceptions(wl_actors)
+            max_age = float(wl_actors["p90_age_open_days"].max()) if len(wl_actors) else 0.0
+            active_actors = int((wl_actors["open_cases_now"] > 0).sum())
     
             k0, k1, k2, k3 = st.columns(4)
             k0.metric("CR open cases", f"{cr_open:,}")
@@ -962,22 +992,23 @@ def run_team(*, qm: QueryManager, product_filter, date_range, min_d, max_d, prod
             left, right = st.columns(2)
             with left:
                 st.markdown("**CR**")
-                _team_open_cases_chart(wl, team="CR")
+                _team_open_cases_chart(wl_actors, team="CR")
             with right:
                 st.markdown("**Compliance**")
-                _team_open_cases_chart(wl, team="Compliance")
+                _team_open_cases_chart(wl_actors, team="Compliance")
     
             st.subheader("Throughput vs backlog")
             st.caption(
                 "Each point is an actor. Higher means more open backlog; farther right means more cases completed in the last 7 days."
             )
-            _team_backlog_throughput_chart(wl)
+            _team_backlog_throughput_chart(wl_actors)
     
             team_day = qm.run(
                 "team_completions_by_day",
                 product_type=product_filter,
                 date_range=date_range,
             )
+            team_day = _rows_without_customer_actors(team_day)
             st.subheader("Completions by actor and day (heatmap)")
             st.caption("Terminal outcomes per day; top actors by total completions in the period.")
             if team_day.empty:
@@ -990,6 +1021,7 @@ def run_team(*, qm: QueryManager, product_filter, date_range, min_d, max_d, prod
                 product_type=product_filter,
                 date_range=date_range,
             )
+            tact = _rows_without_customer_actors(tact)
             if not tact.empty:
                 st.subheader("Terminal outcome mix (last 30d, by actor)")
                 _team_actor_outcome_chart(tact)

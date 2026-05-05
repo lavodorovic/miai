@@ -29,8 +29,20 @@ LEGENDS: dict[str, dict[str, str]] = {
     },
     "kpi_pct_stuck": {
         "subtitle": (
-            "Per application · As of now vs last event (>48h) · Denominator = in-filter cohort · "
-            "PHASE_0 §5."
+            "Per application · Dataset as-of (max audit timestamp) vs last event (>48h) · "
+            "Denominator = in-flight cohort · PHASE_0 §5."
+        ),
+    },
+    "overview_completions_metrics": {
+        "subtitle": (
+            "Terminal outcomes (distinct applications) · Last 30 days ending at max(timestamp); "
+            "trend % compares to the average count in the three prior non-overlapping 30-day blocks · Product/date filters apply."
+        ),
+    },
+    "overview_performance_weekly": {
+        "subtitle": (
+            "Distinct applications per ISO week · New = APPLICATION_STARTED; terminal phase = any terminal action; "
+            "accounts opened = MASTER_DATA_SUBMITTED · Weekly buckets from audit timestamps."
         ),
     },
     "funnel_latest_stage": {

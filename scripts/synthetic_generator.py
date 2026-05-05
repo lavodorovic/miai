@@ -21,6 +21,13 @@ from audit_log_schema import AUDIT_COLUMNS, audit_frame
 
 SYSTEM_ACTOR = "N.A. SYSTEM ACTION"
 
+_TERMINAL_ACTIONS = frozenset({
+    "MASTER_DATA_SUBMITTED",
+    "APPLICATION_REJECTED",
+    "APPLICATION_CANCELLED",
+    "OFFER_REFUSED",
+})
+
 CR_ROSTER = [f"cr{i:02d}@relio.ch" for i in range(1, 9)]
 COMPLIANCE_ROSTER = [f"compliance{i:02d}@relio.ch" for i in range(1, 9)]
 
@@ -208,6 +215,8 @@ def build_timeline(app: SyntheticApplication, start: datetime) -> list[dict[str,
         action="CUSTOMER_RELATION_REVIEW_STARTED",
         description="Customer Relation review is started.",
     )
+    if app.scenario == "stalled_cr_review":
+        return rows
     push(
         delta=_delay_ops(rng),
         actor=_pick_assigned(rng, assigned_cr, CR_ROSTER),
@@ -536,6 +545,45 @@ def _carryover_cut_index(actions: list[str]) -> int:
     return max(3, min(cut, len(actions) - 1))
 
 
+def apply_inflight_stuck_share(
+    df: pd.DataFrame,
+    *,
+    reference_as_of: pd.Timestamp,
+    seed: int,
+    share_stuck: float = 0.5,
+) -> pd.DataFrame:
+    """
+    Shift non-terminal timelines so ~``share_stuck`` of in-flight apps land >48h before
+    ``reference_as_of`` (stuck) and the rest stay fresh — stable vs dataset-relative SLA/stuck SQL.
+    """
+    ref = pd.Timestamp(reference_as_of)
+    if ref.tzinfo is not None:
+        ref = ref.tz_localize(None)
+
+    out = df.copy()
+    out["timestamp"] = pd.to_datetime(out["timestamp"])
+    pieces: list[pd.DataFrame] = []
+    for aid, g in out.groupby("application_id", sort=False):
+        g = g.sort_values("timestamp").reset_index(drop=True)
+        last_action = str(g.iloc[-1]["action"])
+        if last_action in _TERMINAL_ACTIONS:
+            pieces.append(g)
+            continue
+        r = random.Random((seed + abs(hash(aid))) % (2**31))
+        stuck = r.random() < share_stuck
+        last_ts = pd.Timestamp(g.iloc[-1]["timestamp"])
+        if stuck:
+            target_last = ref - pd.Timedelta(hours=r.randint(72, 420))
+        else:
+            target_last = ref - pd.Timedelta(hours=r.randint(4, 44))
+        shift = target_last - last_ts
+        g = g.assign(timestamp=g["timestamp"] + shift)
+        pieces.append(g)
+
+    combined = pd.concat(pieces, ignore_index=True)
+    return combined.sort_values(["application_id", "timestamp"]).reset_index(drop=True)
+
+
 def apply_carryover_history_for_period_dashboard(
     df: pd.DataFrame,
     *,
@@ -627,14 +675,15 @@ def generate_synthetic_audit_log(
     start_base = datetime.fromisoformat(start_date)
 
     scenarios_weights: list[tuple[str, float]] = [
-        ("success_full", 0.50),
-        ("success_with_loops", 0.18),
+        ("success_full", 0.40),
+        ("success_with_loops", 0.16),
         ("stalled_customer", 0.05),
         ("stalled_offer", 0.05),
-        ("stalled_ops_compliance", 0.03),
-        ("rejected", 0.08),
+        ("stalled_ops_compliance", 0.12),
+        ("stalled_cr_review", 0.05),
+        ("rejected", 0.07),
         ("cancelled_mid", 0.05),
-        ("offer_refused", 0.06),
+        ("offer_refused", 0.05),
     ]
 
     def pick_scenario() -> str:
@@ -666,6 +715,8 @@ def generate_synthetic_audit_log(
             scenario, rounds = "stalled_offer", app_rng.randint(1, 2)
         elif s == "stalled_ops_compliance":
             scenario, rounds = "stalled_ops_compliance", 1
+        elif s == "stalled_cr_review":
+            scenario, rounds = "stalled_cr_review", 1
         elif s == "rejected":
             scenario, rounds = "rejected", app_rng.randint(1, 1)
         elif s == "cancelled_mid":
@@ -706,6 +757,7 @@ def generate_synthetic_audit_log(
                 seed=seed,
                 carryover_ratio=carryover_ratio,
             )
+        df = apply_inflight_stuck_share(df, reference_as_of=end, seed=int(seed) + 424_242)
     return df
 
 

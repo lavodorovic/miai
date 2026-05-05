@@ -26,7 +26,9 @@ inflight AS (
         stage_order,
         action,
         last_event_at,
-        (EXTRACT(EPOCH FROM (current_timestamp - last_event_at)) / 3600.0) AS hours_since_last_event
+        (
+            EXTRACT(EPOCH FROM ((SELECT max(timestamp) FROM audit_logs) - last_event_at)) / 3600.0
+        ) AS hours_since_last_event
     FROM latest
     WHERE action NOT IN (
         'MASTER_DATA_SUBMITTED',

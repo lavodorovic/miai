@@ -71,7 +71,9 @@ SELECT
 FROM last_row AS lr
 LEFT JOIN app_owner AS ao ON lr.application_id = ao.application_id
 LEFT JOIN mgr_owner AS mo ON lr.application_id = mo.application_id
-WHERE lr.latest_at < (current_timestamp - INTERVAL 48 HOUR)
+WHERE lr.latest_at < (
+        (SELECT max(timestamp) FROM audit_logs) - INTERVAL '48 HOUR'
+    )
   AND lr.action NOT IN (
       'MASTER_DATA_SUBMITTED',
       'APPLICATION_REJECTED',

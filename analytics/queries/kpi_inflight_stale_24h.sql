@@ -41,7 +41,9 @@ last_row AS (
 SELECT
     COUNT(*)::BIGINT AS n_stale_24h
 FROM last_row
-WHERE latest_at < (current_timestamp - INTERVAL 24 HOUR)
+WHERE latest_at < (
+        (SELECT max(timestamp) FROM audit_logs) - INTERVAL '24 HOUR'
+    )
   AND action NOT IN (
         'MASTER_DATA_SUBMITTED',
         'APPLICATION_REJECTED',

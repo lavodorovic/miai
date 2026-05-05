@@ -40,6 +40,7 @@ __all__ = [
     "_rework_product_chart",
     "_overview_sla_stacked_bars",
     "_throughput_daily_chart",
+    "_overview_performance_weekly_chart",
     "_cohort_in_flight_line",
     "_cohort_survival_lines",
     "_cohort_time_to_offer_bars",
@@ -677,14 +678,14 @@ def _executive_insights(
     n_active: int,
     n_stuck: int,
     pct_stuck: float,
-    thr_7d: int,
-    thr_ma7: float,
+    n_completed_last_30d: int,
+    pct_vs_prior_3mo: float | None,
     sla: pd.DataFrame,
     ball: pd.DataFrame,
 ) -> list[str]:
     insights: list[str] = []
     if n_active:
-        insights.append(f"{n_active:,} applications are still in-flight; {n_stuck:,} are stuck over 48h ({pct_stuck:.1f}%).")
+        insights.append(f"{n_active:,} applications are still in-flight; {n_stuck:,} are stuck over 48h ({pct_stuck:.1f}% of in-flight).")
     else:
         insights.append("No in-flight applications in the current filter.")
 
@@ -696,7 +697,14 @@ def _executive_insights(
     if not ball.empty:
         top_team = ball.sort_values("n_applications", ascending=False).iloc[0]
         insights.append(f"Most in-flight work currently waits on {top_team['team']} ({int(top_team['n_applications']):,} apps).")
-    insights.append(f"Terminal throughput was {thr_7d:,} in the last 7 days, with a latest MA7 of {thr_ma7:.1f}/day.")
+    trend_txt = (
+        f"{pct_vs_prior_3mo:+.1f}% vs the prior 3-month average"
+        if pct_vs_prior_3mo is not None and not pd.isna(pct_vs_prior_3mo)
+        else "n/a (insufficient history)"
+    )
+    insights.append(
+        f"Terminal completions (last 30 days): {n_completed_last_30d:,} ({trend_txt})."
+    )
     return insights[:4]
 
 
@@ -1066,6 +1074,41 @@ def _overview_sla_stacked_bars(sla: pd.DataFrame) -> None:
         .configure_axisY(labelAngle=0)
     )
     st.altair_chart(c, width="stretch")
+
+
+def _overview_performance_weekly_chart(perf: pd.DataFrame) -> None:
+    if perf.empty or "week_start" not in perf.columns:
+        return
+    work = perf.copy()
+    work["week_start"] = pd.to_datetime(work["week_start"], errors="coerce")
+    long = work.melt(
+        id_vars=["week_start"],
+        value_vars=["n_new_applications", "n_terminal_phase", "n_accounts_opened"],
+        var_name="series",
+        value_name="n",
+    )
+    labels = {
+        "n_new_applications": "New applications",
+        "n_terminal_phase": "Applications reaching terminal phase",
+        "n_accounts_opened": "Accounts opened",
+    }
+    long["series"] = long["series"].astype(str).map(labels)
+    chart = (
+        alt.Chart(long)
+        .mark_line(interpolate="monotone", strokeWidth=1.2)
+        .encode(
+            x=alt.X("week_start:T", title="Week (start)"),
+            y=alt.Y("n:Q", title="Applications (distinct per week)"),
+            color=alt.Color("series:N", title=""),
+            tooltip=[
+                alt.Tooltip("week_start:T", title="Week"),
+                "series",
+                alt.Tooltip("n:Q", format=",d"),
+            ],
+        )
+        .properties(height=260)
+    )
+    st.altair_chart(chart, width="stretch")
 
 
 def _throughput_daily_chart(thr: pd.DataFrame) -> None:

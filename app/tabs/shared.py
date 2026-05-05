@@ -63,8 +63,10 @@ def filter_dataframe(
     return out
 
 
-def render_sidebar_client_filters() -> ClientFilters:
+def render_sidebar_client_filters(*, enabled: bool = True) -> ClientFilters:
     """Add controls under the main sidebar; return a ClientFilters to apply in tabs."""
+    if not enabled:
+        return ClientFilters()
     st.sidebar.subheader("View filters (subset of loaded rows)")
     t = st.sidebar.selectbox("Team (optional)", ["(All)", "CR", "Compliance"], key="ui_filter_team")
     a = st.sidebar.text_input("Actor text contains (optional)", value="", key="ui_filter_actor", max_chars=64)
